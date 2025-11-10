@@ -204,7 +204,7 @@ def main():
     # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022_with_EWT.csv")
-    ap.add_argument("--seq-len", type=int, default=32)
+    ap.add_argument("--seq-len", type=int, default=256)
 
     # Model
     ap.add_argument("--base", type=int, default=64)
