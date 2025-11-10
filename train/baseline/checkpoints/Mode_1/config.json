@@ -1,0 +1,13 @@
+{
+  "mode_col": "Mode_1",
+  "filters_g1": 32,
+  "filters_g2": 64,
+  "filters_g3": 64,
+  "eval_csv": "../../VMD_modes_with_residual_2021_2022_with_EWT.csv",
+  "lstm": 128,
+  "dense1": 40,
+  "dense2": 100,
+  "batch_size": 300,
+  "epochs": 10,
+  "lr": 0.0005
+}
