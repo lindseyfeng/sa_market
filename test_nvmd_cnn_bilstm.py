@@ -182,7 +182,7 @@ def main():
     device = args.device
 
     # Load checkpoint
-    ckpt = torch.load(args.ckpt, map_location="gpu", weights_only=False)
+    ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
 
     ck_args = ck.get("args", {})
     ck_scalers = ck.get("scalers", {})
