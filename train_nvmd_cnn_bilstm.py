@@ -293,7 +293,7 @@ def main():
             optimizer=None
         )
         if va_ld <= 50:
-            args.alpha, args.beta = 0.5, 1
+            args.alpha, args.beta = 1, 0.5
 
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
