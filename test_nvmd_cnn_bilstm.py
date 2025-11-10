@@ -162,14 +162,14 @@ def main():
     ap = argparse.ArgumentParser()
     # Data
     ap.add_argument("--csv",  default="VMD_modes_with_residual_2021_2022_with_EWT.csv", help="CSV with Mode_1..Mode_12, Residual, RRP")
-    ap.add_argument("--seq-len", type=int, default=8)
+    ap.add_argument("--seq-len", type=int, default=32)
     ap.add_argument("--target-col", type=str, default="RRP")
     # Model / 
     ap.add_argument("--ckpt", default = "./runs_nvmd_mrc_bilstm/best.pt", help="Path to checkpoint .pt from training")
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     # Loss weights
-    ap.add_argument("--alpha", type=float, default=0.01)
-    ap.add_argument("--beta",  type=float, default=2.0)
+    ap.add_argument("--alpha", type=float, default=1)
+    ap.add_argument("--beta",  type=float, default=1)
     # Loader
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--num-workers", type=int, default=0)
