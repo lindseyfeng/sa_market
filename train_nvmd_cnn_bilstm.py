@@ -175,7 +175,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         
         if is_train:
             loss_decomp = F.mse_loss(imfs_pred_norm, imfs_true_norm)
-            loss_sumcons = F.mse_loss(imfs_pred_norm.sum(dim=1), (imfs_true_norm.sum(dim=1))       # sum-consistency penalty
+            loss_sumcons = F.mse_loss(imfs_pred_norm.sum(dim=1), (imfs_true_norm.sum(dim=1)))       # sum-consistency penalty
             loss_pred   = F.mse_loss(y_pred, yb)
             
 
