@@ -169,11 +169,15 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         
         # print(sig_pred[0], sig_true[0], y_pred[0], yb[0])
       
-
-        # ---- losses ----
         loss_decomp = F.mse_loss(imfs_pred, imfs_true)
         loss_sumcons = F.mse_loss(sig_pred, sig_true)       # sum-consistency penalty
         loss_pred   = F.mse_loss(y_pred, yb)
+        
+        if is_train:
+            loss_decomp = F.mse_loss(imfs_pred_norm, imfs_true_norm)
+            loss_sumcons = F.mse_loss(imfs_pred_norm.sum(dim=1), (imfs_true_norm.sum(dim=1))       # sum-consistency penalty
+            loss_pred   = F.mse_loss(y_pred, yb)
+            
 
         # fold sum-consistency into the decomposition term
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
