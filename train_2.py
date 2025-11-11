@@ -166,7 +166,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         y_pred = sig_pred[:, -1].unsqueeze(1)               # (B,1) — last timestep
 
 
-        loss_decomp = F.loss_fn(imfs_pred, imfs_true)
+        loss_decomp = loss_fn(imfs_pred, imfs_true)
         loss_pred   = F.mse_loss(y_pred, yb)
         loss = alpha * loss_decomp + beta * loss_pred
 
