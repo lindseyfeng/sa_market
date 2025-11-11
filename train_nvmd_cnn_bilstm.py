@@ -167,8 +167,8 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         y_pred = sig_pred[:, -1].unsqueeze(1)               # (B,1)
 
         
-        print(sig_pred, sig_true, y_pred, y_b)
-        break
+        print(sig_pred, sig_true, y_pred, yb)
+        return
 
         # ---- losses ----
         loss_decomp = F.mse_loss(imfs_pred, imfs_true)
