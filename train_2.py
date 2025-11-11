@@ -133,7 +133,8 @@ class Decomp13Dataset(Dataset):
 
 def train_or_eval_epoch(model, loader, device, alpha, beta,
                         imf_mins, imf_maxs,
-                        optimizer=None, clip_grad=None):
+                        optimizer=None, clip_grad=None,
+                        sum_reg: float = 1.0): 
 
     is_train = optimizer is not None
     model.train(is_train)
@@ -147,28 +148,31 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         channel_axis=1
     )
 
+    loss_fn_imf = torch.nn.HuberLoss(delta=1.0)
+
     for xb, imfs_true_norm, yb in loader:
-        xb = xb.to(device)                   # (B,1,L) normalized input
-        imfs_true_norm = imfs_true_norm.to(device)  # (B,K,L) normalized IMFs
-        yb = yb.to(device)                   # (B,1) raw RRP
+        xb = xb.to(device)                         # (B,1,L)
+        imfs_true_norm = imfs_true_norm.to(device) # (B,K,L)
+        yb = yb.to(device)                         # (B,1)
 
-  
-        imfs_pred_norm, y_pred = model(xb)        # (B,K,L), ignore model y
+        imfs_pred_norm, y_pred = model(xb)         # (B,K,L), (B,1)
 
-        loss_fn = torch.nn.HuberLoss(delta=1.0)
+        # Denorm for losses on original scale
+        imfs_pred = imf_scaler.denorm(imfs_pred_norm)  # (B,K,L)
+        imfs_true = imf_scaler.denorm(imfs_true_norm)  # (B,K,L)
+
+        loss_decomp = loss_fn_imf(imfs_pred, imfs_true)
 
 
-        imfs_pred = imf_scaler.denorm(imfs_pred_norm)       # (B,K,L)
-        imfs_true = imf_scaler.denorm(imfs_true_norm)       # (B,K,L)
+        sig_pred = imfs_pred.sum(dim=1)  # (B,L)
+        sig_true = imfs_true.sum(dim=1)  # (B,L)
+        loss_sumcons = F.l1_loss(sig_pred, sig_true)
 
+        loss_pred = F.l1_loss(y_pred, yb)
+        
+        loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
+        loss = alpha * loss_decomp_reg + beta * loss_pred
 
-        sig_pred = imfs_pred.sum(dim=1)                     # (B,L)
-
-        loss_decomp = loss_fn(imfs_pred, imfs_true)
-        loss_pred   = torch.nn.functional.l1_loss(y_pred, yb)
-        loss = alpha * loss_decomp + beta * loss_pred
-
-   
         if is_train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -176,17 +180,15 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
 
-
         bs = xb.size(0)
         total += bs
         sum_loss += loss.item() * bs
-        sum_d    += loss_decomp.item() * bs
+        sum_d    += loss_decomp_reg.item() * bs  # log the regularized decomp loss
         sum_p    += loss_pred.item() * bs
 
     return (sum_loss / max(total,1),
             sum_d    / max(total,1),
             sum_p    / max(total,1))
-
 
 
 def build_default_13(df: pd.DataFrame) -> list[str]:
@@ -219,7 +221,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
     ap.add_argument("--beta",  type=float, default=0.1)      # weight for pred MSE
-    ap.add_argument("--clip-grad", type=float, default=10)
+    ap.add_argument("--clip-grad", type=float, default=None)
     ap.add_argument("--seed", type=int, default=1111)
     ap.add_argument("--num-workers", type=int, default=0)
 
