@@ -81,14 +81,15 @@ def eval_epoch(loader, model, device, sum_reg: float):
         xb = xb.to(device)               # (B,1,L)
         imfs_true = imfs_true.to(device) # (B,K,L)
         yb = yb.to(device)               # (B,1)
+        loss_fn = torch.nn.HuberLoss(delta=1.0)
 
         imfs_pred, y_pred = model(xb)    # (B,K,L), (B,1)
 
         # raw-scale losses
-        loss_decomp = F.mse_loss(imfs_pred, imfs_true)
+        loss_decomp = F.loss_fn(imfs_pred, imfs_true)
         sig_pred = imfs_pred.sum(dim=1)  # (B,L)
         sig_true = imfs_true.sum(dim=1)  # (B,L)
-        loss_sumcons = F.mse_loss(sig_pred, sig_true)
+        loss_sumcons = torch.nn.functional.l1_loss(sig_pred, sig_true)
         loss_pred = F.mse_loss(y_pred, yb)
 
         # regularized decomp (for logging)
