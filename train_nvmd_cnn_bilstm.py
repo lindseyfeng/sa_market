@@ -133,7 +133,8 @@ class Decomp13Dataset(Dataset):
 
 def train_or_eval_epoch(model, loader, device, alpha, beta,
                         imf_mins, imf_maxs,
-                        optimizer=None, clip_grad=None):
+                        optimizer=None, clip_grad=None,
+                        sum_reg: float = 0.5):   # γ: weight for sum-consistency penalty
 
     is_train = optimizer is not None
     model.train(is_train)
@@ -148,27 +149,33 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
     )
 
     for xb, imfs_true_norm, yb in loader:
-        xb = xb.to(device)                   # (B,1,L) normalized input
-        imfs_true_norm = imfs_true_norm.to(device)  # (B,K,L) normalized IMFs
-        yb = yb.to(device)                   # (B,1) raw RRP
+        xb = xb.to(device)                         # (B,1,L) normalized input
+        imfs_true_norm = imfs_true_norm.to(device) # (B,K,L) normalized IMFs
+        yb = yb.to(device)                         # (B,1) raw RRP
 
-  
-        imfs_pred_norm, _ = model(xb)        # (B,K,L), ignore model y
+        imfs_pred_norm, _ = model(xb)              # (B,K,L), ignore model y for this pipe
 
-
+        # ---- denorm to original scale ----
         imfs_pred = imf_scaler.denorm(imfs_pred_norm)       # (B,K,L)
         imfs_true = imf_scaler.denorm(imfs_true_norm)       # (B,K,L)
 
-
+        # ---- sums across modes (per timestep) ----
         sig_pred = imfs_pred.sum(dim=1)                     # (B,L)
-        y_pred = sig_pred[:, -1].unsqueeze(1)               # (B,1) — last timestep
+        sig_true = imfs_true.sum(dim=1)                     # (B,L)
 
+        # use last step as y_pred (as before)
+        y_pred = sig_pred[:, -1].unsqueeze(1)               # (B,1)
 
+        # ---- losses ----
         loss_decomp = F.mse_loss(imfs_pred, imfs_true)
+        loss_sumcons = F.mse_loss(sig_pred, sig_true)       # sum-consistency penalty
         loss_pred   = F.mse_loss(y_pred, yb)
-        loss = alpha * loss_decomp + beta * loss_pred
 
-   
+        # fold sum-consistency into the decomposition term
+        loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
+
+        loss = alpha * loss_decomp_reg + beta * loss_pred
+
         if is_train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -176,11 +183,11 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
 
-
         bs = xb.size(0)
         total += bs
         sum_loss += loss.item() * bs
-        sum_d    += loss_decomp.item() * bs
+        # report the *regularized* decomp loss so logs reflect the constraint
+        sum_d    += loss_decomp_reg.item() * bs
         sum_p    += loss_pred.item() * bs
 
     return (sum_loss / max(total,1),
@@ -203,11 +210,11 @@ def main():
     ap = argparse.ArgumentParser()
     # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
-    ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
+    ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022_with_EWT.csv")
     ap.add_argument("--seq-len", type=int, default=256)
 
     # Model
-    ap.add_argument("--base", type=int, default=128)
+    ap.add_argument("--base", type=int, default=64)
     ap.add_argument("--lstm-hidden", type=int, default=128)
     ap.add_argument("--lstm-layers", type=int, default=3)
     ap.add_argument("--bidirectional", action="store_true", default=True)
@@ -215,10 +222,10 @@ def main():
 
     # Train
     ap.add_argument("--epochs", type=int, default=100)
-    ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
-    ap.add_argument("--beta",  type=float, default=1)      # weight for pred MSE
+    ap.add_argument("--beta",  type=float, default=0)      # weight for pred MSE
     ap.add_argument("--clip-grad", type=float, default=100.0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num-workers", type=int, default=0)
@@ -292,14 +299,14 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if va_ld <= 50:
-            args.alpha, args.beta = 1, 0.5
+        if va_ld <= 100:
+            args.alpha, args.beta = 0.1, 1
 
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
               f"val: total={va_loss:.6f} decomp={va_ld:.6f} pred={va_lp:.6f}")
 
-        if va_lp < best_val:
+        if va_loss < best_val:
             best_val = va_loss
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
