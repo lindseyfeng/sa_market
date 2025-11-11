@@ -162,7 +162,7 @@ def main():
     ap = argparse.ArgumentParser()
     # Data
     ap.add_argument("--csv",  default="VMD_modes_with_residual_2021_2022.csv", help="CSV with Mode_1..Mode_12, Residual, RRP")
-    ap.add_argument("--seq-len", type=int, default=256)
+    ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--target-col", type=str, default="RRP")
     # Model / 
     ap.add_argument("--ckpt", default = "./runs_nvmd_mrc_bilstm/best.pt", help="Path to checkpoint .pt from training")
