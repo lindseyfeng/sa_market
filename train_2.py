@@ -294,7 +294,7 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if va_ld <= 20:
+        if va_ld <= 5:
             args.alpha, args.beta = 1, 0.5
 
         print(f"[Epoch {ep:02d}] "
