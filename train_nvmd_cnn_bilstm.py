@@ -216,7 +216,7 @@ def main():
     # Train
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--batch", type=int, default=1024)
-    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
     ap.add_argument("--beta",  type=float, default=0.1)      # weight for pred MSE
     ap.add_argument("--clip-grad", type=float, default=100.0)
