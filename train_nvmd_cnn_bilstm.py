@@ -214,59 +214,99 @@ def main():
         bidirectional=args.bidirectional, freeze_decomposer=False
     ).to(device)
 
-    # Stage freeze
-    _freeze_for_stage(model, args.stage)
+    # -------------------------
+    # Two-stage training
+    # -------------------------
+    EP_A = args.epochs_decomp
+    EP_B = args.epochs_pred
+    LR_A = args.lr_decomp if args.lr_decomp is not None else args.lr
+    LR_B = args.lr_pred   if args.lr_pred   is not None else args.lr
 
-    # Optimizer (only trainable params)
-    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=args.lr)
+    bestA, bestB = float("inf"), float("inf")
+    bestA_state, bestB_state = None, None
 
-    # Train loop
-    best_val = float("inf")
-    best_state = None
+    # ===== Stage A: decomposer only =====
+    _freeze_for_stage(model, "decomp")
+    optA = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=LR_A)
 
-    for ep in range(1, args.epochs + 1):
-        # ensure optimizer tracks current trainables (useful if you change stage mid-run)
-        _retie_optimizer_to_trainables(opt, model)
-
+    for ep in range(1, EP_A + 1):
+        _retie_optimizer_to_trainables(optA, model)  # safety in case of any toggles
         tr_ld, tr_lp = train_epoch(
-            trdl, model, device, opt, args.clip_grad,
-            args.alpha, args.beta, args.sum_reg, args.stage
+            trdl, model, device, optA, args.clip_grad,
+            args.alpha, args.beta, args.sum_reg, stage="decomp"
         )
         va_ld, va_lp = eval_epoch(vadl, model, device, args.sum_reg)
 
-        # Aggregate "total" same as both-mode for logging
-        tr_total = args.alpha * tr_ld + args.beta * tr_lp if args.stage == "both" else (tr_ld if args.stage=="decomp" else tr_lp)
-        va_total = args.alpha * va_ld + args.beta * va_lp if args.stage == "both" else (va_ld if args.stage=="decomp" else va_lp)
-
-        print(f"[Epoch {ep:02d}] "
+        tr_total = tr_ld  # optimizing decomp only
+        va_total = va_ld
+        print(f"[Stage A | Epoch {ep:02d}] "
               f"train: total={tr_total:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
               f"val:   total={va_total:.6f} decomp={va_ld:.6f} pred={va_lp:.6f}")
 
-        if va_total < best_val:
-            best_val = va_total
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        if va_total < bestA:
+            bestA = va_total
+            bestA_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        # checkpoint
         torch.save({
+            "stage": "A",
             "epoch": ep,
-            "val_best": best_val,
+            "val_best_decomp": bestA,
             "model_state": model.state_dict(),
             "args": vars(args),
             "decomp_cols": decomp_cols,
-        }, os.path.join(args.outdir, f"epoch_{ep:02d}.pt"))
+        }, os.path.join(args.outdir, f"stageA_epoch_{ep:02d}.pt"))
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
+    if bestA_state is not None:
+        model.load_state_dict(bestA_state)
+
+    # ===== Stage B: predictors only =====
+    _freeze_for_stage(model, "pred")
+    optB = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=LR_B)
+
+    for ep in range(1, EP_B + 1):
+        _retie_optimizer_to_trainables(optB, model)
+        tr_ld, tr_lp = train_epoch(
+            trdl, model, device, optB, args.clip_grad,
+            args.alpha, args.beta, args.sum_reg, stage="pred"
+        )
+        va_ld, va_lp = eval_epoch(vadl, model, device, args.sum_reg)
+
+        tr_total = tr_lp  # optimizing pred only
+        va_total = va_lp
+        print(f"[Stage B | Epoch {ep:02d}] "
+              f"train: total={tr_total:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
+              f"val:   total={va_total:.6f} decomp={va_ld:.6f} pred={va_lp:.6f}")
+
+        if va_total < bestB:
+            bestB = va_total
+            bestB_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
         torch.save({
-            "epoch": "best",
-            "val_best": best_val,
-            "model_state": best_state,
+            "stage": "B",
+            "epoch": ep,
+            "val_best_pred": bestB,
+            "model_state": model.state_dict(),
             "args": vars(args),
             "decomp_cols": decomp_cols,
-        }, os.path.join(args.outdir, "best.pt"))
-        print(f"Saved best checkpoint: val_total={best_val:.6f} → {os.path.join(args.outdir,'best.pt')}")
-    else:
-        print("No best state captured; nothing saved.")
+        }, os.path.join(args.outdir, f"stageB_epoch_{ep:02d}.pt"))
+
+    # ===== Save final (best from Stage B) =====
+    if bestB_state is not None:
+        model.load_state_dict(bestB_state)
+
+    # Unfreeze both so the final model is ready end-to-end
+    _freeze_for_stage(model, "both")
+
+    torch.save({
+        "epoch": "best",
+        "stage": "B",
+        "val_best_decomp": bestA,
+        "val_best_pred": bestB,
+        "model_state": model.state_dict(),
+        "args": vars(args),
+        "decomp_cols": decomp_cols,
+    }, os.path.join(args.outdir, "best.pt"))
+    print(f"Saved best checkpoint → {os.path.join(args.outdir,'best.pt')}")
 
 
 if __name__ == "__main__":
