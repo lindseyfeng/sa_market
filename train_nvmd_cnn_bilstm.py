@@ -117,12 +117,13 @@ def train_epoch(loader, model, device, optimizer, clip_grad: float,
         yb = yb.to(device)
 
         imfs_pred, y_pred = model(xb)
+        loss_fn = torch.nn.HuberLoss(delta=1.0)
 
         # raw-scale losses
-        loss_decomp = F.mse_loss(imfs_pred, imfs_true)
+        loss_decomp = loss_fn(imfs_pred, imfs_true)
         sig_pred = imfs_pred.sum(dim=1)
         sig_true = imfs_true.sum(dim=1)
-        loss_sumcons = F.mse_loss(sig_pred, sig_true)
+        loss_sumcons = torch.nn.functional.l1_loss(sig_pred, sig_true)
         loss_pred = F.mse_loss(y_pred, yb)
 
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
@@ -166,7 +167,7 @@ def main():
     # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
-    ap.add_argument("--seq-len", type=int, default=256)
+    ap.add_argument("--seq-len", type=int, default=1024)
 
     # Model
     ap.add_argument("--base", type=int, default=64)
@@ -176,7 +177,7 @@ def main():
 
     # Train
     # Stage A: decomposer-only training
-    ap.add_argument("--epochs-decomp", type=int, default=10,
+    ap.add_argument("--epochs-decomp", type=int, default=30,
                     help="Number of epochs to train decomposer only")
 
     # Stage B: predictors-only training
@@ -184,10 +185,10 @@ def main():
                     help="Number of epochs to train predictors only")
 
     # General training hyperparameters
-    ap.add_argument("--batch", type=int, default=1024)
+    ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--lr", type=float, default=5e-4,
                     help="Default LR (used if lr-decomp / lr-pred are not set)")
-    ap.add_argument("--lr-decomp", type=float, default=None,
+    ap.add_argument("--lr-decomp", type=float, default=1e-3,
                     help="Optional LR override for Stage A")
     ap.add_argument("--lr-pred", type=float, default=None,
                     help="Optional LR override for Stage B")
@@ -197,7 +198,7 @@ def main():
     ap.add_argument("--beta",  type=float, default=1.0,
                     help="Weight for prediction loss (only used if a future Stage C is added)")
 
-    ap.add_argument("--sum-reg", type=float, default=1.0,
+    ap.add_argument("--sum-reg", type=float, default=1.2,
                     help="Sum-consistency penalty γ")
     ap.add_argument("--clip-grad", type=float, default=100.0)
 
