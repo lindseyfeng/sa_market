@@ -161,7 +161,7 @@ def eval_epoch(model, loader, device, imf_mins, imf_maxs):
 def main():
     ap = argparse.ArgumentParser()
     # Data
-    ap.add_argument("--csv",  default="VMD_modes_with_residual_2021_2022_with_EWT.csv", help="CSV with Mode_1..Mode_12, Residual, RRP")
+    ap.add_argument("--csv",  default="VMD_modes_with_residual_2021_2022.csv", help="CSV with Mode_1..Mode_12, Residual, RRP")
     ap.add_argument("--seq-len", type=int, default=256)
     ap.add_argument("--target-col", type=str, default="RRP")
     # Model / 
