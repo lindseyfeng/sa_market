@@ -186,7 +186,7 @@ def main():
                     help="Number of epochs to train predictors only")
 
     # General training hyperparameters
-    ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=5e-4,
                     help="Default LR (used if lr-decomp / lr-pred are not set)")
     ap.add_argument("--lr-decomp", type=float, default=1e-3,
