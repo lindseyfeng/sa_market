@@ -203,7 +203,7 @@ def main():
     trds = Decomp13DatasetRaw(df_tr, decomp_cols, seq_len=args.seq_len, target_col="RRP")
     vads = Decomp13DatasetRaw(df_va, decomp_cols, seq_len=args.seq_len, target_col="RRP")
 
-    trdl = DataLoader(trds, batch_size=args.batch, shuffle=True,  num_workers=args.num_workers, pin_memory=True)
+    trdl = DataLoader(trds, batch_size=args.batch, shuffle=False,  num_workers=args.num_workers, pin_memory=True)
     vadl = DataLoader(vads, batch_size=args.batch, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
     # Model
