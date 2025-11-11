@@ -296,9 +296,7 @@ def main():
         )
         if ep >= 10:
             args.alpha, args.beta = 0.7, 1.5
-        else:
             
-
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
               f"val: total={va_loss:.6f} decomp={va_ld:.6f} pred={va_lp:.6f}")
