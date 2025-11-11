@@ -181,6 +181,9 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         loss = alpha * loss_decomp_reg + beta * loss_pred
 
         if is_train:
+            if beta == 0:
+                for p in self.predictor.parameters():
+                    p.requires_grad = False
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             if clip_grad is not None:
