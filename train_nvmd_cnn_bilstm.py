@@ -175,17 +175,35 @@ def main():
     ap.add_argument("--bidirectional", action="store_true", default=True)
 
     # Train
-    ap.add_argument("--epochs", type=int, default=100)
+    # Stage A: decomposer-only training
+    ap.add_argument("--epochs-decomp", type=int, default=10,
+                    help="Number of epochs to train decomposer only")
+
+    # Stage B: predictors-only training
+    ap.add_argument("--epochs-pred", type=int, default=90,
+                    help="Number of epochs to train predictors only")
+
+    # General training hyperparameters
     ap.add_argument("--batch", type=int, default=1024)
-    ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--alpha", type=float, default=1.0)
-    ap.add_argument("--beta",  type=float, default=1.0)
-    ap.add_argument("--sum-reg", type=float, default=1.0)      # γ for sum-consistency on raw scale
+    ap.add_argument("--lr", type=float, default=5e-4,
+                    help="Default LR (used if lr-decomp / lr-pred are not set)")
+    ap.add_argument("--lr-decomp", type=float, default=None,
+                    help="Optional LR override for Stage A")
+    ap.add_argument("--lr-pred", type=float, default=None,
+                    help="Optional LR override for Stage B")
+
+    ap.add_argument("--alpha", type=float, default=1.0,
+                    help="Weight for decomposition loss (only used if a future Stage C is added)")
+    ap.add_argument("--beta",  type=float, default=1.0,
+                    help="Weight for prediction loss (only used if a future Stage C is added)")
+
+    ap.add_argument("--sum-reg", type=float, default=1.0,
+                    help="Sum-consistency penalty γ")
     ap.add_argument("--clip-grad", type=float, default=100.0)
+
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num-workers", type=int, default=0)
-    ap.add_argument("--stage", type=str, default="both", choices=["decomp","pred","both"],
-                    help="What to optimize in this run")
+
 
     # Logs / save
     ap.add_argument("--outdir", type=str, default="./runs_nvmd_mrc_bilstm_raw")
