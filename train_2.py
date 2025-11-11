@@ -302,7 +302,7 @@ def main():
               f"val: total={va_loss:.6f} decomp={va_ld:.6f} pred={va_lp:.6f}")
 
         if va_lp < best_val:
-            best_val = va_loss
+            best_val = va_lp
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
         # simple checkpoint each epoch
