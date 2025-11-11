@@ -179,7 +179,7 @@ def main():
 
     # Train
     # Stage A: decomposer-only training
-    ap.add_argument("--epochs-decomp", type=int, default=30,
+    ap.add_argument("--epochs-decomp", type=int, default=20,
                     help="Number of epochs to train decomposer only")
 
     # Stage B: predictors-only training
