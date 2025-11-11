@@ -268,7 +268,7 @@ def main():
                                     
     )
 
-    trdl = DataLoader(trds, batch_size=args.batch, shuffle=True,  num_workers=args.num_workers, pin_memory=True)
+    trdl = DataLoader(trds, batch_size=args.batch, shuffle=False,  num_workers=args.num_workers, pin_memory=True)
     vadl = DataLoader(vads, batch_size=args.batch, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
     # Model
