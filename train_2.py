@@ -216,11 +216,11 @@ def main():
     ap.add_argument("--freeze-decomposer", action="store_true", default=False)
 
     # Train
-    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
-    ap.add_argument("--beta",  type=float, default=0.1)      # weight for pred MSE
+    ap.add_argument("--beta",  type=float, default=0)      # weight for pred MSE
     ap.add_argument("--clip-grad", type=float, default=None)
     ap.add_argument("--seed", type=int, default=1111)
     ap.add_argument("--num-workers", type=int, default=0)
@@ -295,7 +295,7 @@ def main():
             optimizer=None
         )
         if ep >= 10:
-            args.alpha, args.beta = 0.7, 1.5
+            args.alpha, args.beta = 0.2, 1
             
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
