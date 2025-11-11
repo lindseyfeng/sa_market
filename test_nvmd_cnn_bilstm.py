@@ -112,49 +112,50 @@ def build_default_13(df: pd.DataFrame) -> list[str]:
     return cols
 
 @torch.no_grad()
+@torch.no_grad()
 def eval_epoch(model, loader, device, imf_mins, imf_maxs):
     model.eval()
 
+    # only needed if you also want a recon metric
     imf_scaler = MinMaxScalerND(
         mins=torch.tensor(imf_mins, dtype=torch.float32, device=device),
         maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),
         channel_axis=1
     )
 
-    y_true_all = []
-    y_pred_all = []
+    y_true_all, y_pred_all = [], []
+    recon_mae_accum, n_batches = 0.0, 0
 
     for xb, imfs_true_norm, yb in loader:
         xb = xb.to(device)
         imfs_true_norm = imfs_true_norm.to(device)
         yb = yb.to(device)                    # (B,1)
 
-        # Forward
-        imfs_pred_norm, _ = model(xb)         # (B,K,L)
+        imfs_pred_norm, y_pred = model(xb)    # (B,K,L), (B,1)
 
-        # Denorm per-IMF
-        imfs_pred = imf_scaler.denorm(imfs_pred_norm)   # (B,K,L)
-
-        # Aggregate to signal and take last timestep
-        sig_pred = imfs_pred.sum(dim=1)       # (B,L)
-        y_pred = sig_pred[:, -1].unsqueeze(1)
-
-        # Save
+        # collect for MAE/RMSE on the same thing you trained
         y_true_all.append(yb)
         y_pred_all.append(y_pred)
 
-    # Concatenate
-    y_true_all = torch.cat(y_true_all, dim=0).view(-1)  # (N,)
-    y_pred_all = torch.cat(y_pred_all, dim=0).view(-1)  # (N,)
+        # (optional) recon check on raw scale — will NOT match pred metrics
+        imfs_pred = imf_scaler.denorm(imfs_pred_norm)
+        imfs_true = imf_scaler.denorm(imfs_true_norm)
+        sig_pred  = imfs_pred.sum(dim=1)          # (B,L)
+        sig_true  = imfs_true.sum(dim=1)          # (B,L)
+        recon_mae_accum += torch.mean(torch.abs(sig_pred - sig_true)).item()
+        n_batches += 1
 
-    # MAE
-    mae = torch.mean(torch.abs(y_pred_all - y_true_all)).item()
+    y_true_all = torch.cat(y_true_all, dim=0).view(-1)
+    y_pred_all = torch.cat(y_pred_all, dim=0).view(-1)
 
-    # RMSE
-    mse  = torch.mean((y_pred_all - y_true_all)**2).item()
-    rmse = mse**0.5
+    mae  = torch.mean(torch.abs(y_pred_all - y_true_all)).item()
+    rmse = torch.sqrt(torch.mean((y_pred_all - y_true_all)**2)).item()
 
-    return mae, rmse
+    # optional: average reconstruction MAE across batches
+    recon_mae = recon_mae_accum / max(n_batches, 1)
+
+    return mae, rmse  # (optionally also return recon_mae)
+
 
 
 
