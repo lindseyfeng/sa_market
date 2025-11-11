@@ -206,10 +206,10 @@ def main():
     # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
-    ap.add_argument("--seq-len", type=int, default=256)
+    ap.add_argument("--seq-len", type=int, default=512)
 
     # Model
-    ap.add_argument("--base", type=int, default=64)
+    ap.add_argument("--base", type=int, default=128)
     ap.add_argument("--lstm-hidden", type=int, default=128)
     ap.add_argument("--lstm-layers", type=int, default=3)
     ap.add_argument("--bidirectional", action="store_true", default=True)
@@ -220,7 +220,7 @@ def main():
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
-    ap.add_argument("--beta",  type=float, default=0)      # weight for pred MSE
+    ap.add_argument("--beta",  type=float, default=0.2)      # weight for pred MSE
     ap.add_argument("--clip-grad", type=float, default=100.0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num-workers", type=int, default=0)
@@ -294,7 +294,7 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if va_ld <= 50:
+        if va_ld <= 20:
             args.alpha, args.beta = 1, 0.5
 
         print(f"[Epoch {ep:02d}] "
