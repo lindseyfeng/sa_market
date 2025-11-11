@@ -207,7 +207,7 @@ def main():
     ap.add_argument("--seq-len", type=int, default=512)
 
     # Model
-    ap.add_argument("--base", type=int, default=64)
+    ap.add_argument("--base", type=int, default=128)
     ap.add_argument("--lstm-hidden", type=int, default=128)
     ap.add_argument("--lstm-layers", type=int, default=3)
     ap.add_argument("--bidirectional", action="store_true", default=True)
