@@ -112,6 +112,7 @@ def train_epoch(loader, model, device, optimizer, clip_grad: float,
     total, sum_d, sum_p = 0, 0.0, 0.0
 
     for xb, imfs_true, yb in loader:
+        print("here")
         xb = xb.to(device)
         imfs_true = imfs_true.to(device)
         yb = yb.to(device)
