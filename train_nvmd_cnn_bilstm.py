@@ -167,7 +167,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         y_pred = sig_pred[:, -1].unsqueeze(1)               # (B,1)
 
         
-        print(sig_pred, sig_true, y_pred, yb)
+        print(sig_pred[0], sig_true[0], y_pred[0], yb[0])
         return
 
         # ---- losses ----
