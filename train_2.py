@@ -155,6 +155,8 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
   
         imfs_pred_norm, _ = model(xb)        # (B,K,L), ignore model y
 
+        loss_fn = torch.nn.HuberLoss(delta=1.0)
+
 
         imfs_pred = imf_scaler.denorm(imfs_pred_norm)       # (B,K,L)
         imfs_true = imf_scaler.denorm(imfs_true_norm)       # (B,K,L)
@@ -164,7 +166,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         y_pred = sig_pred[:, -1].unsqueeze(1)               # (B,1) — last timestep
 
 
-        loss_decomp = F.mse_loss(imfs_pred, imfs_true)
+        loss_decomp = F.loss_fn(imfs_pred, imfs_true)
         loss_pred   = F.mse_loss(y_pred, yb)
         loss = alpha * loss_decomp + beta * loss_pred
 
