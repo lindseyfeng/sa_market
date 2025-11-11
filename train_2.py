@@ -220,9 +220,9 @@ def main():
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
-    ap.add_argument("--beta",  type=float, default=0.2)      # weight for pred MSE
-    ap.add_argument("--clip-grad", type=float, default=5)
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--beta",  type=float, default=0.1)      # weight for pred MSE
+    ap.add_argument("--clip-grad", type=float, default=10)
+    ap.add_argument("--seed", type=int, default=1111)
     ap.add_argument("--num-workers", type=int, default=0)
 
     # Logs / save
@@ -294,8 +294,10 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if ep >= 20:
+        if ep >= 10:
             args.alpha, args.beta = 0.7, 1.5
+        else:
+            
 
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
