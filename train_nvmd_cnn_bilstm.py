@@ -182,7 +182,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
 
         if is_train:
             if beta == 0:
-                for p in self.predictors.parameters():
+                for p in model.predictors.parameters():
                     p.requires_grad = False
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
