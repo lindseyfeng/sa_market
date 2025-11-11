@@ -216,7 +216,7 @@ def main():
     ap.add_argument("--freeze-decomposer", action="store_true", default=False)
 
     # Train
-    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
