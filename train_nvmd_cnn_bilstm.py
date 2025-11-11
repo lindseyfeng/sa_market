@@ -215,10 +215,10 @@ def main():
     # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
-    ap.add_argument("--seq-len", type=int, default=128)
+    ap.add_argument("--seq-len", type=int, default=64)
 
     # Model
-    ap.add_argument("--base", type=int, default=128)
+    ap.add_argument("--base", type=int, default=64)
     ap.add_argument("--lstm-hidden", type=int, default=128)
     ap.add_argument("--lstm-layers", type=int, default=3)
     ap.add_argument("--bidirectional", action="store_true", default=True)
