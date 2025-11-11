@@ -86,7 +86,7 @@ def eval_epoch(loader, model, device, sum_reg: float):
         imfs_pred, y_pred = model(xb)    # (B,K,L), (B,1)
 
         # raw-scale losses
-        loss_decomp = F.loss_fn(imfs_pred, imfs_true)
+        loss_decomp = loss_fn(imfs_pred, imfs_true)
         sig_pred = imfs_pred.sum(dim=1)  # (B,L)
         sig_true = imfs_true.sum(dim=1)  # (B,L)
         loss_sumcons = torch.nn.functional.l1_loss(sig_pred, sig_true)
