@@ -166,6 +166,9 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         # use last step as y_pred (as before)
         y_pred = sig_pred[:, -1].unsqueeze(1)               # (B,1)
 
+        
+        print(sig_pred, sig_true, y_pred)
+
         # ---- losses ----
         loss_decomp = F.mse_loss(imfs_pred, imfs_true)
         loss_sumcons = F.mse_loss(sig_pred, sig_true)       # sum-consistency penalty
