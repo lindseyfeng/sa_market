@@ -211,7 +211,7 @@ def main():
     # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
-    ap.add_argument("--seq-len", type=int, default=128)
+    ap.add_argument("--seq-len", type=int, default=64)
 
     # Model
     ap.add_argument("--base", type=int, default=128)
@@ -222,7 +222,7 @@ def main():
 
     # Train
     ap.add_argument("--epochs", type=int, default=100)
-    ap.add_argument("--batch", type=int, default=1024)
+    ap.add_argument("--batch", type=int, default=2048)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF
     ap.add_argument("--beta",  type=float, default=0)      # weight for pred
