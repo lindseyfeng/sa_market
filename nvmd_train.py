@@ -119,10 +119,10 @@ def train_or_eval_epoch_raw(
     tot, log_total, log_recon, log_sum = 0, 0.0, 0.0, 0.0
 
     for x_win, y_win in loader:
-        x_win = x_win.to(device)            # (B, 1, L) after unsqueeze
-        print(x_win.shape)
+        x_win = x_win.to(device)            # (B, 1, L)
+   
         y_win = y_win.to(device)            # (B, K, L)
-        print(y_win.shape)
+    
 
         # forward (raw output, no sigmoid)
         imfs_pred = model(x_win)            # (B, K, L) raw
