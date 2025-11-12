@@ -191,7 +191,7 @@ def main():
     device = args.device
 
     # Load checkpoint
-    ck = torch.load(args.ckpt, map_location="cpu")
+    ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
     ck_args = ck.get("args", {})
     ck_scalers = ck.get("scalers", {})
     decomp_cols = ck.get("decomp_cols", None)
