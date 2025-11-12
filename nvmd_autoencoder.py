@@ -57,10 +57,16 @@ class NVMD_Autoencoder(nn.Module):
         self.up3 = nn.ConvTranspose1d(base*2, base, kernel_size=4, stride=2, padding=1)    # L
         self.dec3 = CausalConvBlock1D(base, base, k=7, s=1)
 
-        # Output layer: K IMF channels, linear activation
-        self.proj = nn.Conv1d(base, K, kernel_size=1, bias=True)
+        self.proj_shared = nn.Conv1d(base, base, kernel_size=1)
+        self.heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(base, base, kernel_size=3, padding=1, groups=base),  # depthwise refine
+                nn.GELU(),
+                nn.Conv1d(base, 1, kernel_size=1)  # per-mode pointwise
+            ) for _ in range(K)
+        ])
 
-        # (Optional) init
+
         self.apply(self._init_weights)
 
     @staticmethod
@@ -100,11 +106,12 @@ class NVMD_Autoencoder(nn.Module):
         # print(d3.shape)
         d3 = self.dec3(d3)
         # print(d3.shape)
-
-        imfs = self.proj(d3) # (B, K)
-        # print(imfs.shape)
-
+        
+        f  = self.proj_shared(d3)  # (B, base, L)
+        ys = [h(f) for h in self.heads]    # list of (B,1,L)
+        imfs = torch.cat(ys, dim=1)        # (B,K,L)
         return imfs
+
 
 
 
