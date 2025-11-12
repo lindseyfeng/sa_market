@@ -168,7 +168,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         sig_true = imfs_true.sum(dim=1)  # (B,L)
         loss_sumcons = F.l1_loss(sig_pred, sig_true)
 
-        loss_pred = mse_loss(y_pred, yb)
+        loss_pred = F.mse_loss(y_pred, yb)
         
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
         loss = alpha * loss_decomp_reg + beta * loss_pred
