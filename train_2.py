@@ -159,7 +159,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
         y_pred = y_modes_raw.sum(dim=1, keepdim=True)      # (B,1)
         imfs_pred = imf_scaler.denorm(imfs_pred_norm)      # (B,K,L)
-        # imfs_true = imf_scaler.denorm(imfs_true_norm)      # (B,K,L)
+        imfs_true = imf_scaler.denorm(imfs_true_norm)      # (B,K,L)
 
         # loss_decomp   = F.l1_loss(imfs_pred_norm, imfs_true_norm)
         # loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
