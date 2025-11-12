@@ -161,14 +161,14 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         imfs_pred = imf_scaler.denorm(imfs_pred_norm)  # (B,K,L)
         imfs_true = imf_scaler.denorm(imfs_true_norm)  # (B,K,L)
 
-        loss_decomp = loss_fn_imf(imfs_pred, imfs_true)
+        loss_decomp =  F.mse_los(imfs_pred, imfs_true)
 
 
         sig_pred = imfs_pred.sum(dim=1)  # (B,L)
         sig_true = imfs_true.sum(dim=1)  # (B,L)
         loss_sumcons = F.l1_loss(sig_pred, sig_true)
 
-        loss_pred = F.l1_loss(y_pred, yb)
+        loss_pred = loss_fn_imf(y_pred, yb)
         
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
         loss = alpha * loss_decomp_reg + beta * loss_pred
@@ -220,7 +220,7 @@ def main():
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=15e-4)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
-    ap.add_argument("--beta",  type=float, default=0.2)      # weight for pred MSE
+    ap.add_argument("--beta",  type=float, default=0.1)      # weight for pred MSE
     ap.add_argument("--clip-grad", type=float, default=None)
     ap.add_argument("--seed", type=int, default=1111)
     ap.add_argument("--num-workers", type=int, default=0)
