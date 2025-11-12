@@ -48,7 +48,7 @@ class NVMD_MRC_BiLSTM(nn.Module):
             imfs_pred_norm: (B, K, L)  # normalized per-mode sequences from decomposer
             y_modes_norm:   (B, K)     # per-mode next-step (normalized) predictions
         """
-        imfs_pred_norm = self.decomposer(x)  # (B, K, L)
+        imfs_pred_norm = torch.sigmoid(self.decomposer(x))  # (B, K, L)
 
         y_list = []
         for i in range(self.K):
