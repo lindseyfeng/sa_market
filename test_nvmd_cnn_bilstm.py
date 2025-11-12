@@ -112,36 +112,44 @@ def build_default_13(df: pd.DataFrame) -> list[str]:
     return cols
 
 @torch.no_grad()
-@torch.no_grad()
 def eval_epoch(model, loader, device, imf_mins, imf_maxs):
     model.eval()
 
-    # only needed if you also want a recon metric
-    imf_scaler = MinMaxScalerND(
-        mins=torch.tensor(imf_mins, dtype=torch.float32, device=device),
-        maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),
-        channel_axis=1
-    )
+
+    mins = torch.tensor(imf_mins, dtype=torch.float32, device=device).view(1, -1)  # (1,K)
+    rng  = (torch.tensor(imf_maxs, dtype=torch.float32, device=device) -
+            torch.tensor(imf_mins, dtype=torch.float32, device=device)).clamp_min(1e-12).view(1, -1)  # (1,K)
+
+    mins_L = mins.view(1, -1, 1)  # (1,K,1)
+    rng_L  = rng.view(1, -1, 1)   # (1,K,1)
 
     y_true_all, y_pred_all = [], []
     recon_mae_accum, n_batches = 0.0, 0
 
     for xb, imfs_true_norm, yb in loader:
         xb = xb.to(device)
-        imfs_true_norm = imfs_true_norm.to(device)
-        yb = yb.to(device)                    # (B,1)
+        imfs_true_norm = imfs_true_norm.to(device)  # (B,K,L), normalized
+        yb = yb.to(device)                          # (B,1)
 
-        imfs_pred_norm, y_pred = model(xb)    # (B,K,L), (B,1)
+        imfs_pred_norm, y_pred_modes_norm = model(xb)  # (B,K,L), (B,K) or (B,K,1)/(B,1,K)
 
-        # collect for MAE/RMSE on the same thing you trained
+        yk = y_pred_modes_norm
+        if yk.dim() == 3:
+            if yk.size(-1) == 1:    # (B,K,1) -> (B,K)
+                yk = yk.squeeze(-1)
+            elif yk.size(1) == 1:   # (B,1,K) -> (B,K)
+                yk = yk.squeeze(1)
+                
+        y_pred_modes = yk * rng + mins              # (B,K) raw-scale per-IMF next-step preds
+        y_pred = y_pred_modes.sum(dim=1, keepdim=True)  # (B,1) raw-scale scalar
+
         y_true_all.append(yb)
         y_pred_all.append(y_pred)
 
-        # (optional) recon check on raw scale — will NOT match pred metrics
-        imfs_pred = imf_scaler.denorm(imfs_pred_norm)
-        imfs_true = imf_scaler.denorm(imfs_true_norm)
-        sig_pred  = imfs_pred.sum(dim=1)          # (B,L)
-        sig_true  = imfs_true.sum(dim=1)          # (B,L)
+        imfs_pred = imfs_pred_norm * rng_L + mins_L
+        imfs_true = imfs_true_norm * rng_L + mins_L
+        sig_pred  = imfs_pred.sum(dim=1)  # (B,L)
+        sig_true  = imfs_true.sum(dim=1)  # (B,L)
         recon_mae_accum += torch.mean(torch.abs(sig_pred - sig_true)).item()
         n_batches += 1
 
@@ -149,12 +157,13 @@ def eval_epoch(model, loader, device, imf_mins, imf_maxs):
     y_pred_all = torch.cat(y_pred_all, dim=0).view(-1)
 
     mae  = torch.mean(torch.abs(y_pred_all - y_true_all)).item()
-    rmse = torch.sqrt(torch.mean((y_pred_all - y_true_all)**2)).item()
+    rmse = torch.sqrt(torch.mean((y_pred_all - y_true_all) ** 2)).item()
 
-    # optional: average reconstruction MAE across batches
+    # If you want to log this, return it; otherwise omit from return.
     recon_mae = recon_mae_accum / max(n_batches, 1)
 
     return mae, rmse  # (optionally also return recon_mae)
+
 
 
 
