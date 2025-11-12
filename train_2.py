@@ -47,61 +47,64 @@ class MinMaxScalerND:
 
 class Decomp13Dataset(Dataset):
     """
-    13 decomposition signals:
-        Mode_1 ... Mode_12, Residual
-
-    Each IMF is normalized by its own min/max.
-    x_norm = sum of normalized 13 signals.
-    y_true = raw RRP value.
+    Inputs:
+      - x: raw RRP window
+      - imf_win: 13 normalized IMF windows (per-mode min/max)
+      - y: raw RRP at t+L
     """
 
     def __init__(
         self,
         df: pd.DataFrame,
-        decomp_cols: list[str],     # 13 input columns
+        decomp_cols: list[str],   # 13 IMF columns
         seq_len: int = 9,
         target_col: str = "RRP",
-        sig_mins: np.ndarray | None = None,
-        sig_maxs: np.ndarray | None = None,
         imf_mins: np.ndarray | None = None,
         imf_maxs: np.ndarray | None = None,
+        x_mode: str = "raw",      # "raw" or "sum_norm"
+        add_rrp_scaler: bool = False,
     ):
         self.decomp_cols = decomp_cols
-        self.K = len(decomp_cols)      # = 13
+        self.K = len(decomp_cols)   # 13
         self.L = seq_len
+        self.x_mode = x_mode
 
-        # ----- raw IMF matrix: (T,13) -> (13,T)
+        # ----- raw IMFs: (T,13) -> (13,T)
         imfs_np = df[decomp_cols].to_numpy(dtype=np.float32)
-        self.imfs = torch.tensor(imfs_np).transpose(0,1)    # (13,T)
+        self.imfs = torch.tensor(imfs_np).transpose(0, 1)   # (13,T)
 
-        # ----- raw target series RRP
-        target_np = df[target_col].to_numpy(dtype=np.float32)
-        self.target = torch.tensor(target_np, dtype=torch.float32)  # (T,)
-        T = len(self.target)
+        # raw target series (RRP)
+        rrp_np = df[target_col].to_numpy(dtype=np.float32)
+        self.rrp = torch.tensor(rrp_np, dtype=torch.float32)   # (T,)
+        T = len(self.rrp)
 
-        # ----- per-signal min/max (for each IMF)
-        if sig_mins is None or sig_maxs is None:
-            sig_mins = imfs_np.min(axis=0)    # (13,)
-            sig_maxs = imfs_np.max(axis=0)
-        self.sig_mins = np.asarray(sig_mins)
-        self.sig_maxs = np.asarray(sig_maxs)
-
-        # ----- per-IMF min/max (same for this data)
+        #  per-IMF min/max (for normalization)
         if imf_mins is None or imf_maxs is None:
             imf_mins = self.imfs.min(dim=1).values.numpy()
             imf_maxs = self.imfs.max(dim=1).values.numpy()
         self.imf_mins = np.asarray(imf_mins)
         self.imf_maxs = np.asarray(imf_maxs)
 
-        # ----- normalize IMFs per mode
-        mins = torch.tensor(self.imf_mins).unsqueeze(1)     # (13,1)
+        mins = torch.tensor(self.imf_mins).unsqueeze(1)  # (13,1)
         rngs = (torch.tensor(self.imf_maxs) - torch.tensor(self.imf_mins)).unsqueeze(1) + 1e-12
-        self.imfs_norm = (self.imfs - mins) / rngs          # (13,T)
+        self.imfs_norm = (self.imfs - mins) / rngs       # (13,T) in [0,1] ideally
 
-        # ----- x_norm = sum of 13 normalized IMFs
-        self.signal_norm = self.imfs_norm.sum(dim=0)        # (T,)
+        # x
+        if self.x_mode == "raw":
+            self.x_series = self.rrp                      
+        elif self.x_mode == "sum_norm":  # x is sum of normalized IMFs
+            self.x_series = self.imfs_norm.sum(dim=0)      # (T,)
+        else:
+            raise ValueError("x_mode must be 'raw' or 'sum_norm'")
 
-        # ----- number of windows
+        # optional scaler for raw RRP (useful later)
+        if add_rrp_scaler:
+            self.rrp_min = float(self.rrp.min().item())
+            self.rrp_max = float(self.rrp.max().item())
+        else:
+            self.rrp_min = self.rrp_max = None
+
+        
         self.N = T - self.L - 1
         if self.N < 0:
             self.N = 0
@@ -111,24 +114,22 @@ class Decomp13Dataset(Dataset):
 
     def __getitem__(self, i):
         L = self.L
+        # x window (1,L)
+        x = self.x_series[i:i+L].unsqueeze(0)             # (1,L)
 
-        # x_norm window (1,L)
-        x = self.signal_norm[i:i+L].unsqueeze(0)
-
-        # 13 IMF windows (13,L)
-        imf_win = self.imfs_norm[:, i:i+L]
+        # 13 normalized IMF windows (13,L)
+        imf_win = self.imfs_norm[:, i:i+L]                # (13,L)
 
         # raw target RRP(t+L)
-        y = self.target[i+L]
+        y = self.rrp[i+L]                                 # scalar
 
-        return x, imf_win, y.unsqueeze(0)    # (1,L), (13,L), (1,)
+        return x, imf_win, y.unsqueeze(0)                 # (1,L), (13,L), (1,)
 
     def scalers(self):
-        """Return ONLY what training needs — per-IMF min/max."""
-        return dict(
-            imf_mins=self.imf_mins,   # (13,)
-            imf_maxs=self.imf_maxs,   # (13,)
-        )
+        d = dict(imf_mins=self.imf_mins, imf_maxs=self.imf_maxs)
+        if self.rrp_min is not None:
+            d.update(rrp_min=self.rrp_min, rrp_max=self.rrp_max)
+        return d
 
 
 def train_or_eval_epoch(model, loader, device, alpha, beta,
@@ -138,6 +139,10 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
 
     is_train = optimizer is not None
     model.train(is_train)
+
+    decomposer_frozen = all(not p.requires_grad for p in model.decomposer.parameters())
+    if decomposer_frozen:
+        model.decomposer.eval()
 
     total, sum_loss, sum_d, sum_p = 0, 0.0, 0.0, 0.0
 
@@ -161,11 +166,11 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         imfs_pred = imf_scaler.denorm(imfs_pred_norm)      # (B,K,L)
         imfs_true = imf_scaler.denorm(imfs_true_norm)      # (B,K,L)
 
-        # loss_decomp   = F.l1_loss(imfs_pred_norm, imfs_true_norm)
-        # loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
+        loss_decomp   = F.l1_loss(imfs_pred_norm, imfs_true_norm)
+        loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
         
-        loss_decomp   = F.l1_loss(imfs_pred, imfs_true)
-        loss_sumcons  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
+        # loss_decomp   = F.l1_loss(imfs_pred, imfs_true)
+        # loss_sumcons  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
         loss_pred     = F.l1_loss(y_pred, yb)
         
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
@@ -281,6 +286,11 @@ def main():
     best_state = None
 
     for ep in range(1, args.epochs + 1):
+        if ep > 50:
+            args.alpha, args.beta = 0.2, 1
+            for name, param in model.decomposer.named_parameters():
+                param.requires_grad = False
+            model.decomposer.eval() 
         tr_loss, tr_ld, tr_lp = train_or_eval_epoch(
             model, trdl, device,
             alpha=args.alpha, beta=args.beta,    
@@ -293,10 +303,6 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if ep > 50:
-            args.alpha, args.beta = 0.2, 1
-            for name, param in model.decomposer.named_parameters():
-                param.requires_grad = False
             
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
