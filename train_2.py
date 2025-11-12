@@ -148,7 +148,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         channel_axis=1
     )
 
-    loss_fn_imf = torch.nn.HuberLoss(delta=1.0)
+    loss_fn_imf = torch.nn.HuberLoss(delta=10.0)
 
     for xb, imfs_true_norm, yb in loader:
         xb = xb.to(device)                         # (B,1,L)
@@ -159,11 +159,14 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
         y_pred = y_modes_raw.sum(dim=1, keepdim=True)      # (B,1)
         imfs_pred = imf_scaler.denorm(imfs_pred_norm)      # (B,K,L)
-        imfs_true = imf_scaler.denorm(imfs_true_norm)      # (B,K,L)
+        # imfs_true = imf_scaler.denorm(imfs_true_norm)      # (B,K,L)
+
+        loss_decomp   = F.l1_loss(imfs_pred_norm, imfs_true_norm)
+        loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
         
-        loss_decomp   = F.l1_loss(imfs_pred, imfs_true)
-        loss_sumcons  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
-        loss_pred     = F.mse_loss(y_pred, yb)
+        # loss_decomp   = F.l1_loss(imfs_pred, imfs_true)
+        # loss_sumcons  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
+        loss_pred     = F.loss_fn_imf(y_pred, yb)
         
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
         loss = alpha * loss_decomp_reg + beta * loss_pred
