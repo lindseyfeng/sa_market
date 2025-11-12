@@ -169,8 +169,9 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         loss_decomp   = loss_fn_imf(imfs_pred_norm, imfs_true_norm)
         loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
         
-        # loss_decomp   = F.l1_loss(imfs_pred, imfs_true)
-        # loss_sumcons  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
+        loss_decomp1   = F.l1_loss(imfs_pred, imfs_true)
+        loss_sumcons1  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
+        loss_decomp_reg1 = loss_decomp1 + sum_reg * loss_sumcons1
         loss_pred     = F.l1_loss(y_pred, yb)
         
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
@@ -187,7 +188,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         bs = xb.size(0)
         total += bs
         sum_loss += loss.item() * bs
-        sum_d    += loss_decomp_reg.item() * bs  # log the regularized decomp loss
+        sum_d    += loss_decomp_reg1.item() * bs  # log the regularized decomp loss
         sum_p    += loss_pred.item() * bs
 
     return (sum_loss / max(total,1),
