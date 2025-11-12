@@ -293,7 +293,7 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if ep > 20:
+        if ep > 30:
             args.alpha, args.beta = 0.2, 1
             for name, param in model.decomposer.named_parameters():
                 param.requires_grad = False
