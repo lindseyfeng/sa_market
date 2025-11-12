@@ -294,8 +294,8 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if ep > 20:
-            args.alpha, args.beta = 0.2, 1
+        # if ep > 20:
+        #     args.alpha, args.beta = 0.2, 1
             
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
