@@ -134,7 +134,7 @@ class Decomp13Dataset(Dataset):
 def train_or_eval_epoch(model, loader, device, alpha, beta,
                         imf_mins, imf_maxs,
                         optimizer=None, clip_grad=None,
-                        sum_reg: float = 1.0): 
+                        sum_reg: float = 0.2): 
 
     is_train = optimizer is not None
     model.train(is_train)
