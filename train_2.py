@@ -132,24 +132,53 @@ class Decomp13Dataset(Dataset):
         return d
 
 
-def train_or_eval_epoch(model, loader, device, alpha, beta,
-                        imf_mins, imf_maxs,
-                        optimizer=None, clip_grad=None,
-                        sum_reg: float = 0.2): 
+def train_or_eval_epoch(
+    model,
+    loader,
+    device,
+    alpha,
+    beta,
+    imf_mins,
+    imf_maxs,
+    optimizer=None,          # used only when separate=False (joint)
+    clip_grad=None,
+    sum_reg: float = 0.2,
+    separate: bool = False,  # <-- NEW
+    opt_dec=None,            # <-- NEW: optimizer for decomposer
+    opt_pred=None,           # <-- NEW: optimizer for predictors
+):
+    """
+    If separate=False (joint):
+        - One forward pass: x -> decomposer -> predictors (uses imfs_pred_norm)
+        - Loss = alpha * decomp_loss + beta * pred_loss
+        - optimizer updates all (unless you've frozen parts outside)
 
-    is_train = optimizer is not None
-    model.train(is_train)
+    If separate=True:
+        - A: Decomposer step: minimize decomp losses (no predictor forward)
+        - B: Predictor step: feed *ground-truth* normalized IMFs into heads,
+             compute pred loss in RAW scale vs yb, update only predictor heads
+    """
+    is_train_joint = (optimizer is not None) and (not separate)
+    is_train_sep   = separate and ((opt_dec is not None) or (opt_pred is not None))
 
+    # Put the right modules in the right modes
+    if separate:
+        # manual control per-step
+        model.train(True)
+    else:
+        model.train(is_train_joint)
+
+    # keep decomposer in eval if all params are frozen
     decomposer_frozen = all(not p.requires_grad for p in model.decomposer.parameters())
     if decomposer_frozen:
         model.decomposer.eval()
 
-    total, sum_loss, sum_d, sum_p = 0, 0.0, 0.0, 0.0
+    total, log_loss, log_dec, log_pred = 0, 0.0, 0.0, 0.0
 
-    # Per-mode scaler → broadcast across (B,K,L)
+    # Per-mode scaler for denorm of per-mode next-steps
     imf_scaler = MinMaxScalerND(
-        mins=torch.tensor(imf_mins, dtype=torch.float32, device=device),  # (K,)
-        maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),  # (K,)
+        mins=torch.tensor(imf_mins, dtype=torch.float32, device=device),
+        maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),
         channel_axis=1
     )
 
@@ -160,40 +189,118 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         imfs_true_norm = imfs_true_norm.to(device) # (B,K,L)
         yb = yb.to(device)                         # (B,1)
 
-        imfs_pred_norm, y_modes_norm = model(xb)           # (B,K,L), (B,K)
-        y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
-        y_pred = y_modes_raw.sum(dim=1, keepdim=True)      # (B,1)
-        imfs_pred = imf_scaler.denorm(imfs_pred_norm)      # (B,K,L)
-        imfs_true = imf_scaler.denorm(imfs_true_norm)      # (B,K,L)
+        if not separate:
+            # ----------------------------
+            # JOINT STEP (single pass)
+            # ----------------------------
+            imfs_pred_norm, y_modes_norm = model(xb)         # (B,K,L), (B,K or B,K,1)
+            # unify (B,K)
+            if y_modes_norm.dim() == 3:
+                if y_modes_norm.size(-1) == 1:
+                    y_modes_norm = y_modes_norm.squeeze(-1)
+                elif y_modes_norm.size(1) == 1:
+                    y_modes_norm = y_modes_norm.squeeze(1)
 
-        loss_decomp   = loss_fn_imf(imfs_pred_norm, imfs_true_norm)
-        loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
-        
-        loss_decomp1   = F.l1_loss(imfs_pred, imfs_true)
-        loss_sumcons1  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
-        loss_decomp_reg1 = loss_decomp1 + sum_reg * loss_sumcons1
-        loss_pred     = F.l1_loss(y_pred, yb)
-        
-        loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
-        loss = alpha * loss_decomp_reg + beta * loss_pred
+            # decomp losses (normalized space)
+            loss_decomp   = loss_fn_imf(imfs_pred_norm, imfs_true_norm)
+            loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
+            loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
 
+            # prediction loss (raw space)
+            y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
+            y_pred = y_modes_raw.sum(dim=1, keepdim=True)      # (B,1)
+            loss_pred = F.l1_loss(y_pred, yb)
 
-        if is_train:
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            if clip_grad is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-            optimizer.step()
+            loss = alpha * loss_decomp_reg + beta * loss_pred
 
-        bs = xb.size(0)
-        total += bs
-        sum_loss += loss.item() * bs
-        sum_d    += loss_decomp_reg1.item() * bs  # log the regularized decomp loss
-        sum_p    += loss_pred.item() * bs
+            if is_train_joint:
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                if clip_grad is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                optimizer.step()
 
-    return (sum_loss / max(total,1),
-            sum_d    / max(total,1),
-            sum_p    / max(total,1))
+            bs = xb.size(0)
+            total   += bs
+            log_loss += loss.item() * bs
+            log_dec  += loss_decomp_reg.item() * bs
+            log_pred += loss_pred.item() * bs
+
+        else:
+            # ----------------------------
+            # SEPARATE STEPS
+            # ----------------------------
+
+            # A) Decomposer-only update
+            if opt_dec is not None:
+                model.train(True)
+                # Forward through decomposer only
+                imfs_pred_norm = model.decomposer(xb)         # (B,K,L); your model applies sigmoid in forward; here call raw
+                imfs_pred_norm = torch.sigmoid(imfs_pred_norm)  # ensure [0,1] since targets are normalized
+
+                loss_decomp   = loss_fn_imf(imfs_pred_norm, imfs_true_norm)
+                loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
+                loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
+
+                opt_dec.zero_grad(set_to_none=True)
+                loss_decomp_reg.backward()
+                if clip_grad is not None:
+                    torch.nn.utils.clip_grad_norm_(model.decomposer.parameters(), clip_grad)
+                opt_dec.step()
+            else:
+                # still compute for logging
+                with torch.no_grad():
+                    imfs_pred_norm = torch.sigmoid(model.decomposer(xb))
+                    loss_decomp   = loss_fn_imf(imfs_pred_norm, imfs_true_norm)
+                    loss_sumcons  = F.l1_loss(imfs_pred_norm.sum(dim=1), imfs_true_norm.sum(dim=1))
+                    loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
+
+            # B) Predictor-only update (teacher forcing with GT IMFs)
+            #    Feed ground-truth normalized imfs into each head
+            #    y target is raw RRP next-step (yb)
+            #    So: heads output normalized per-mode next-step; denorm then sum → compare with yb
+            if opt_pred is not None:
+                model.train(True)
+                # forward each head with GT imfs
+                y_list = []
+                for k in range(imfs_true_norm.size(1)):
+                    yk_norm = model.predictors[k](imfs_true_norm[:, k:k+1, :])  # (B,1)
+                    y_list.append(yk_norm)
+                y_modes_norm = torch.cat(y_list, dim=1)  # (B,K)
+                y_modes_raw  = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
+                y_pred       = y_modes_raw.sum(dim=1, keepdim=True)  # (B,1)
+                loss_pred    = F.l1_loss(y_pred, yb)
+
+                opt_pred.zero_grad(set_to_none=True)
+                loss_pred.backward()
+                if clip_grad is not None:
+                    torch.nn.utils.clip_grad_norm_( (p for n,p in model.named_parameters() if n.startswith("predictors")),
+                                                    clip_grad)
+                opt_pred.step()
+            else:
+                with torch.no_grad():
+                    y_list = []
+                    for k in range(imfs_true_norm.size(1)):
+                        yk_norm = model.predictors[k](imfs_true_norm[:, k:k+1, :])
+                        y_list.append(yk_norm)
+                    y_modes_norm = torch.cat(y_list, dim=1)
+                    y_modes_raw  = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)
+                    y_pred       = y_modes_raw.sum(dim=1, keepdim=True)
+                    loss_pred    = F.l1_loss(y_pred, yb)
+
+            # Logging aggregation (define a synthetic total = alpha*dec + beta*pred)
+            bs = xb.size(0)
+            total    += bs
+            log_dec  += loss_decomp_reg.item() * bs
+            log_pred += loss_pred.item() * bs
+            log_loss += (alpha * loss_decomp_reg.item() + beta * loss_pred.item()) * bs
+
+    return (
+        log_loss / max(total, 1),
+        log_dec  / max(total, 1),
+        log_pred / max(total, 1),
+    )
+
 
 
 def build_default_13(df: pd.DataFrame) -> list[str]:
@@ -221,7 +328,7 @@ def main():
     ap.add_argument("--freeze-decomposer", action="store_true", default=False)
 
     # Train
-    ap.add_argument("--epochs", type=int, default=150)
+    ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--batch", type=int, default=2048)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF
@@ -278,42 +385,81 @@ def main():
         bidirectional=args.bidirectional,
         freeze_decomposer=args.freeze_decomposer
     ).to(device)
-
-    # Optimizer
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-
-    # Train loop
+        
+    # --- helpers ---
+    def pred_params(m):
+        for n, p in m.named_parameters():
+            if n.startswith("predictors") and p.requires_grad:
+                yield p
+    
+    ep_switch = 50  
+    
+ 
+    opt_dec  = torch.optim.Adam(model.decomposer.parameters(), lr=args.lr)
+    opt_pred = torch.optim.Adam(list(pred_params(model)),      lr=args.lr)
+    
     best_val = float("inf")
     best_state = None
-
+    
     for ep in range(1, args.epochs + 1):
-        if ep > 50:
-            args.alpha, args.beta = 0.2, 1
-            for name, param in model.decomposer.named_parameters():
-                param.requires_grad = False
-            model.decomposer.eval() 
-        tr_loss, tr_ld, tr_lp = train_or_eval_epoch(
-            model, trdl, device,
-            alpha=args.alpha, beta=args.beta,    
-            imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
-            optimizer=opt, clip_grad=args.clip_grad
-        )
+        if ep == ep_switch + 1:
+            # after separate warmup → switch to JOINT fine-tune
+            # (optionally reweight: make predictor loss dominate)
+            args.alpha, args.beta = 0.2, 1.0
+    
+            # ensure everything is trainable for joint fine-tune
+            for p in model.decomposer.parameters():
+                p.requires_grad = True
+            model.decomposer.train(True)
+    
+            # joint optimizer over all trainable params
+            opt_joint = torch.optim.Adam(
+                (p for p in model.parameters() if p.requires_grad),
+                lr=args.lr
+            )
+    
+        if ep <= ep_switch:
+            # SEPARATE warmup:
+            #   A) dec step on IMF recon losses
+            #   B) pred step on GT-IMF → per-mode next-step → sum(raw) vs yb
+            tr_loss, tr_ld, tr_lp = train_or_eval_epoch(
+                model, trdl, device,
+                alpha=args.alpha, beta=args.beta,   # only for logging in separate mode
+                imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
+                optimizer=None,                    
+                clip_grad=args.clip_grad,
+                separate=True,                      
+                opt_dec=opt_dec,
+                opt_pred=opt_pred
+            )
+        else:
+
+            tr_loss, tr_ld, tr_lp = train_or_eval_epoch(
+                model, trdl, device,
+                alpha=args.alpha, beta=args.beta,
+                imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
+                optimizer=opt_joint,                # <---
+                clip_grad=args.clip_grad,
+                separate=False
+            )
+    
         va_loss, va_ld, va_lp = train_or_eval_epoch(
             model, vadl, device,
             alpha=args.alpha, beta=args.beta,
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
-            optimizer=None
+            optimizer=None,
+            separate=False
         )
-            
+    
         print(f"[Epoch {ep:02d}] "
               f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
               f"val: total={va_loss:.6f} decomp={va_ld:.6f} pred={va_lp:.6f}")
-
+    
         if va_lp < best_val:
             best_val = va_lp
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    
 
-        # simple checkpoint each epoch
         ck = {
             "epoch": ep,
             "val_best": best_val,
@@ -324,7 +470,6 @@ def main():
         }
         torch.save(ck, os.path.join(args.outdir, f"epoch_{ep:02d}.pt"))
 
-    # Save best
     if best_state is not None:
         model.load_state_dict(best_state)
         torch.save({
@@ -335,7 +480,8 @@ def main():
             "scalers": sc,
             "decomp_cols": decomp_cols,
         }, os.path.join(args.outdir, "best.pt"))
-        print(f"Saved best checkpoint: val_total={best_val:.6f} → {os.path.join(args.outdir,'best.pt')}")
+
+
     else:
         print("No best state captured; nothing saved.")
 
