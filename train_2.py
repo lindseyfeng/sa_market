@@ -215,7 +215,7 @@ def main():
     ap.add_argument("--freeze-decomposer", action="store_true", default=False)
 
     # Train
-    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--alpha", type=float, default=1)      # weight for IMF MSE
@@ -293,7 +293,7 @@ def main():
             imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
             optimizer=None
         )
-        if ep > 30:
+        if ep > 50:
             args.alpha, args.beta = 0.2, 1
             for name, param in model.decomposer.named_parameters():
                 param.requires_grad = False
