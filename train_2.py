@@ -155,23 +155,19 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
         imfs_true_norm = imfs_true_norm.to(device) # (B,K,L)
         yb = yb.to(device)                         # (B,1)
 
-        imfs_pred_norm, y_pred = model(xb)         # (B,K,L), (B,1)
-
-        # Denorm for losses on original scale
-        imfs_pred = imf_scaler.denorm(imfs_pred_norm)  # (B,K,L)
-        imfs_true = imf_scaler.denorm(imfs_true_norm)  # (B,K,L)
-
-        loss_decomp =  F.l1_loss(imfs_pred, imfs_true)
-
-
-        sig_pred = imfs_pred.sum(dim=1)  # (B,L)
-        sig_true = imfs_true.sum(dim=1)  # (B,L)
-        loss_sumcons = F.l1_loss(sig_pred, sig_true)
-
-        loss_pred = F.mse_loss(y_pred, yb)
+        imfs_pred_norm, y_modes_norm = model(xb)           # (B,K,L), (B,K)
+        y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
+        y_pred = y_modes_raw.sum(dim=1, keepdim=True)      # (B,1)
+        imfs_pred = imf_scaler.denorm(imfs_pred_norm)      # (B,K,L)
+        imfs_true = imf_scaler.denorm(imfs_true_norm)      # (B,K,L)
+        
+        loss_decomp   = F.l1_loss(imfs_pred, imfs_true)
+        loss_sumcons  = F.l1_loss(imfs_pred.sum(dim=1), imfs_true.sum(dim=1))
+        loss_pred     = F.mse_loss(y_pred, yb)
         
         loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
         loss = alpha * loss_decomp_reg + beta * loss_pred
+
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
