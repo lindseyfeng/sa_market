@@ -120,7 +120,7 @@ def train_or_eval_epoch_raw(
 
     for x_win, y_win in loader:
         x_win = x_win.to(device)            # (B, 1, L) after unsqueeze
-        prtin(x_win.shape)
+        print(x_win.shape)
         y_win = y_win.to(device)            # (B, K, L)
         print(y_win.shape)
 
