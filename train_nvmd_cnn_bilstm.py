@@ -231,7 +231,8 @@ def main():
         signal_len=args.seq_len,
     ).to(device)
 
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
 
     best_val = float("inf")
     best_state = None
