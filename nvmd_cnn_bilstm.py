@@ -16,7 +16,7 @@ class NVMD_MRC_BiLSTM(nn.Module):
         lstm_layers: int = 3,
         bidirectional: bool = True,
         freeze_decomposer: bool = False,
-        use_sigmoid: bool = True,   
+        use_sigmoid: bool = False,   
     ):
         super().__init__()
         self.signal_len = signal_len
