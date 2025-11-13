@@ -183,7 +183,7 @@ def train_or_eval_epoch(
         # final RRP prediction MSE
         loss_pred = F.l1_loss(y_pred, yb)
 
-        loss = loss_pred
+        loss = beta*loss_pred + alpha*loss_decomp
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
