@@ -99,38 +99,61 @@ def build_default_13(df: pd.DataFrame) -> list[str]:
 # -------------------------
 # Train/Eval Epochs (RAW scale)
 # -------------------------
-def train_or_eval_epoch_raw(
-    model: nn.Module,
-    loader: DataLoader,
-    device: str,
-    optimizer=None,
-    clip_grad: float | None = None,
-    sum_reg: float = 0.2
-):
-    """
-    RAW-scale training/eval.
-    loss = Huber(imfs_pred, imfs_true) + sum_reg * L1(sum(imfs_pred), sum(imfs_true))
-    """
+def train_or_eval_epoch(model, loader, device, alpha, beta,
+                        imf_mins, imf_maxs,
+                        optimizer=None, clip_grad=None,
+                        sum_reg: float = 0.2):
+
     is_train = optimizer is not None
     model.train(is_train)
 
-    loss_fn_imf = nn.HuberLoss(delta=10.0, reduction="mean")
+    decomposer_frozen = all(not p.requires_grad for p in model.decomposer.parameters())
+    if decomposer_frozen:
+        model.decomposer.eval()
 
-    tot, log_total, log_recon, log_sum = 0, 0.0, 0.0, 0.0
+    total, sum_loss, sum_d, sum_p = 0, 0.0, 0.0, 0.0
 
-    for x_win, y_win in loader:
-        x_win = x_win.to(device)            # (B, 1, L)
-   
-        y_win = y_win.to(device)            # (B, K, L)
-    
+    imf_scaler = MinMaxScalerND(
+        mins=torch.tensor(imf_mins, dtype=torch.float32, device=device),
+        maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),
+        channel_axis=1
+    )
 
-        # forward (raw output, no sigmoid)
-        imfs_pred = model(x_win)            # (B, K, L) raw
+    # IMPORTANT: per-element Huber, no reduction yet
+    loss_fn_imf = torch.nn.HuberLoss(delta=10.0, reduction="none")
 
-        # losses on RAW scale
-        loss_recon = loss_fn_imf(imfs_pred, y_win)
-        loss_sum   = F.l1_loss(imfs_pred.sum(dim=1), y_win.sum(dim=1))
-        loss = loss_recon + sum_reg * loss_sum
+    for xb, imfs_true_norm, yb in loader:
+        xb = xb.to(device)                         # (B,1,L)
+        imfs_true_norm = imfs_true_norm.to(device) # (B,K,L)
+        yb = yb.to(device)                         # (B,1)
+
+        imfs_pred_norm, y_modes_norm = model(xb)   # (B,K,L), (B,K)
+
+        # ---- price prediction (same as before) ----
+        y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
+        y_pred = y_modes_raw.sum(dim=1, keepdim=True)                            # (B,1)
+
+        # ---- PER-MODE decomposition loss in normalized space ----
+        # elementwise Huber: (B,K,L)
+        per_elem = loss_fn_imf(imfs_pred_norm, imfs_true_norm)   # (B,K,L)
+
+        # average over batch & time → per-mode loss: (K,)
+        per_mode_loss = per_elem.mean(dim=(0, 2))                # (K,)
+
+        # scalar decomp loss = mean over modes (same scale as old 'mean over everything')
+        loss_decomp = per_mode_loss.mean()
+
+        # optional: per-mode sum-consistency in normalized space
+        sum_pred_norm = imfs_pred_norm.sum(dim=1)                # (B,L)
+        sum_true_norm = imfs_true_norm.sum(dim=1)                # (B,L)
+        loss_sumcons = F.l1_loss(sum_pred_norm, sum_true_norm)
+
+        loss_decomp_reg = loss_decomp + sum_reg * loss_sumcons
+
+        # ---- price loss (raw space) ----
+        loss_pred = F.l1_loss(y_pred, yb)
+
+        loss = alpha * loss_decomp_reg + beta * loss_pred
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
@@ -139,17 +162,20 @@ def train_or_eval_epoch_raw(
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
 
-        bs = x_win.size(0)
-        tot       += bs
-        log_total += loss.item() * bs
-        log_recon += loss_recon.item() * bs
-        log_sum   += loss_sum.item() * bs
+        bs = xb.size(0)
+        total += bs
+        sum_loss += loss.item() * bs
+        sum_d    += loss_decomp_reg.item() * bs
+        sum_p    += loss_pred.item() * bs
 
-    return (
-        log_total / max(tot, 1),
-        log_recon / max(tot, 1),
-        log_sum   / max(tot, 1),
-    )
+        # OPTIONAL: if you want to quickly inspect per-mode losses for the first batch
+        # (uncomment if useful)
+        # print("per-mode recon:", per_mode_loss.detach().cpu().numpy())
+
+    return (sum_loss / max(total, 1),
+            sum_d    / max(total, 1),
+            sum_p    / max(total, 1))
+        loss = loss_recon + sum_reg * loss_sum
 
 
 # -------------------------
