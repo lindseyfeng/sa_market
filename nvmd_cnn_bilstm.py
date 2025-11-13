@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ---- import your existing modules/classes
 from nvmd_autoencoder import NVMD_Autoencoder
 from train.baseline.cnn_bilstm import MRC_BiLSTM
 
@@ -12,88 +11,124 @@ class NVMD_MRC_BiLSTM(nn.Module):
     def __init__(
         self,
         signal_len: int,
-        K: int = 13,                
         base: int = 64,
         lstm_hidden: int = 128,
         lstm_layers: int = 3,
         bidirectional: bool = True,
         freeze_decomposer: bool = False,
-        d_mode_embed: int = 128
-        
+        use_sigmoid: bool = True,   
     ):
         super().__init__()
         self.signal_len = signal_len
-        self.K = K
-        self.d_mode_embed = d_mode_embed
+        self.use_sigmoid = use_sigmoid
 
-        self.decomposer = NVMD_Autoencoder(in_ch=1, base=base, K=K, signal_len=signal_len)
+        # NOTE: per-mode decomposer -> K=1
+        self.decomposer = NVMD_Autoencoder(
+            in_ch=1,
+            base=base,
+            K=1,
+            signal_len=signal_len,
+        )
 
         if freeze_decomposer:
             for p in self.decomposer.parameters():
                 p.requires_grad = False
 
-        self.mode_embed = nn.Embedding(K, d_mode_embed)
- 
         self.predictor = MRC_BiLSTM(
-            input_dim=1 + d_mode_embed,
+            input_dim=1,            
             seq_len=signal_len,
             lstm_hidden=lstm_hidden,
             lstm_layers=lstm_layers,
             bidirectional=bidirectional,
         )
 
-    def forward(self, x):
-        imfs_pred_norm = torch.sigmoid(self.decomposer(x))  # (B, K, L)
-        B, K, L = imfs_pred_norm.shape
+    def _decompose_norm(self, x: torch.Tensor) -> torch.Tensor:
 
-        device = x.device
-        mode_ids = torch.arange(self.K, device=device)      # (K,)
-        mode_emb = self.mode_embed(mode_ids)                # (K, d_mode_embed)
+        imf = self.decomposer(x)     # (B,1,L) 
+        if self.use_sigmoid:
+            imf = torch.sigmoid(imf)
+        return imf
 
-        
-        mode_emb = mode_emb.unsqueeze(0).expand(B, -1, -1)  # (B,K,d_mode_embed)
+    def forward(self, x: torch.Tensor):
 
-        mode_emb_flat = mode_emb.reshape(B * self.K, self.d_mode_embed)    # (B*K,d)
-        mode_emb_flat = mode_emb_flat.unsqueeze(-1).expand(-1, -1, L)  # (B*K,d,L)
-
-        imfs_flat = imfs_pred_norm.reshape(B * K, 1, L) 
-
-        predictor_in = torch.cat([imfs_flat, mode_emb_flat], dim=1)
-
-        y_flat = self.predictor(predictor_in)  # (B*K,1)
-        
-        y_modes_norm = y_flat.view(B, self.K) # (B,K)
-
-        return imfs_pred_norm, y_modes_norm
+        B, C, L = x.shape
+        assert C == 1, f"Expected x with 1 channel, got {C}"
+        assert L == self.signal_len, f"Expected seq_len={self.signal_len}, got {L}"
 
 
+        imf_pred_norm = self._decompose_norm(x)        # (B,1,L)
+        y_mode_norm = self.predictor(imf_pred_norm)    # (B,1)
+
+        return imf_pred_norm, y_mode_norm
 
     @torch.no_grad()
-    def decompose(self, x):
-        return self.decomposer(x)
+    def decompose(self, x: torch.Tensor):
+
+        return self._decompose_norm(x)
 
 
-# ----------------------------
-# Quick test
-# ----------------------------
-if __name__ == "__main__":
-    B, L = 1, 32
-    K = 13
+class MultiModeNVMD_MRC_BiLSTM(nn.Module):
 
-    model = NVMD_MRC_BiLSTM(
-        signal_len=L,
-        K=K,
-        base=64,
-        lstm_hidden=128,
-        lstm_layers=3,
-        bidirectional=True,
-        freeze_decomposer=False,
-        
-    )
+    def __init__(
+        self,
+        signal_len: int,
+        K: int = 13,
+        base: int = 64,
+        lstm_hidden: int = 128,
+        lstm_layers: int = 3,
+        bidirectional: bool = True,
+        freeze_decomposer: bool = False,
+        use_sigmoid: bool = True,
+    ):
+        super().__init__()
+        self.signal_len = signal_len
+        self.K = K
 
-    x = torch.randn(B, 1, L)
-    imfs, y = model(x)
-    print("Input:", x.shape)
-    print("IMFs :", imfs.shape)
-    print("Pred :", y.shape)
+        self.models = nn.ModuleList([
+            NVMD_MRC_BiLSTM(
+                signal_len=signal_len,
+                base=base,
+                lstm_hidden=lstm_hidden,
+                lstm_layers=lstm_layers,
+                bidirectional=bidirectional,
+                freeze_decomposer=freeze_decomposer,
+                use_sigmoid=use_sigmoid,
+            )
+            for _ in range(K)
+        ])
 
+    def forward(self, x: torch.Tensor):
+        """
+        x: (B,1,L)
+
+        returns:
+            imfs_pred_norm_all: (B,K,L)
+            y_modes_norm:       (B,K)
+        """
+        B, C, L = x.shape
+        assert C == 1, f"Expected x with 1 channel, got {C}"
+        assert L == self.signal_len, f"Expected seq_len={self.signal_len}, got {L}"
+
+        imfs_list = []
+        y_list = []
+
+        for m in self.models:
+            imf_i_norm, y_i_norm = m(x)     # (B,1,L), (B,1)
+            imfs_list.append(imf_i_norm)
+            y_list.append(y_i_norm)
+
+        y_modes_norm = torch.cat(y_list, dim=1)           # list of (B,1)   -> (B,K)
+
+        return imfs_pred_norm_all, y_modes_norm
+
+    @torch.no_grad()
+    def decompose_all(self, x: torch.Tensor):
+        """
+        Returns stacked decomposed sequences from all per-mode models:
+            (B,K,L)
+        """
+        imfs_list = []
+        for m in self.models:
+            imf_i = m.decompose(x)    # (B,1,L)
+            imfs_list.append(imf_i)
+        return torch.cat(imfs_list, dim=1)  # (B,K,L)
