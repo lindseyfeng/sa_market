@@ -140,10 +140,8 @@ def train_or_eval_epoch_joint(
         # 1) Final RRP loss (MSE, as you requested)
         L_rrp = F.mse_loss(y_price, rrp_next)
 
-        # 2) IMF window reconstruction loss
         L_imf_win = F.l1_loss(imfs_pred, imf_win)
-
-        # 3) IMF next-step prediction loss
+        
         L_imf_next = F.l1_loss(y_modes, imf_next)
 
         loss = alpha * L_rrp + beta * L_imf_win + gamma * L_imf_next
