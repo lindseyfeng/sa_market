@@ -151,7 +151,7 @@ def train_or_eval_epoch_joint(
         loss_pred = F.l1_loss(y_true, y_pred)
         loss_recon = F.l1_loss(y_mode_pred, imf_next)
 
-        loss =  loss_pred+loss_recon
+        loss =  args.alpha*loss_pred+loss_recon
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
@@ -199,7 +199,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--alpha", type=float, default=1.0, help="weight for IMF reconstruction loss")
+    ap.add_argument("--alpha", type=float, default=0.1, help="weight for IMF reconstruction loss")
     ap.add_argument("--beta",  type=float, default=0.1, help="weight for next-step prediction loss")
     ap.add_argument("--clip-grad", type=float, default=None)
     ap.add_argument("--seed", type=int, default=42)
