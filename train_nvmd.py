@@ -187,7 +187,7 @@ def main():
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--test-csv",  default="VMD_modes_with_residual_2021_2022.csv")
     ap.add_argument("--rrp-col",   type=str, default="RRP")
-    ap.add_argument("--seq-len",   type=int, default=128)
+    ap.add_argument("--seq-len",   type=int, default=256)
 
     # Model / training
     ap.add_argument("--base",   type=int,   default=64)
