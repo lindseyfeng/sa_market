@@ -121,16 +121,16 @@ def main():
     ap.add_argument("--val-csv", type=str,
                     default="VMD_modes_with_residual_2021_2022.csv")
     ap.add_argument("--rrp-col", type=str, default="RRP")
-    ap.add_argument("--seq-len", type=int, default=64)
+    ap.add_argument("--seq-len", type=int, default=8)
 
     # Model hyperparams
     ap.add_argument("--K", type=int, default=13)
     ap.add_argument("--base", type=int, default=64)
-    ap.add_argument("--d-model", type=int, default=128)
+    ap.add_argument("--d-model", type=int, default=256)
     ap.add_argument("--n-heads", type=int, default=8)
     ap.add_argument("--num-layers", type=int, default=6)
     ap.add_argument("--dim-ff", type=int, default=256)
-    ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--dropout", type=float, default=0.2)
     ap.add_argument("--no-freeze-decomposer", action="store_true",
                     help="If set, decomposer will be trainable.")
 
@@ -138,7 +138,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--weight-decay", type=float, default=0.0)
+    ap.add_argument("--weight-decay", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--num-workers", type=int, default=0)
 
