@@ -3,6 +3,35 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class CausalConv1D(nn.Module):
+    def __init__(self, in_ch, out_ch, k=7, s=1,
+                 act=nn.LeakyReLU(0.1, inplace=True)):
+        super().__init__()
+        self.k = k
+        self.conv = nn.Conv1d(in_ch, out_ch, k, s, padding=0)
+        self.act = act
+
+    def forward(self, x):
+        pad = self.k - 1
+        x = F.pad(x, (pad, 0))
+        return self.act(self.conv(x))
+
+
+class ResCausal(nn.Module):
+    def __init__(self, in_ch, out_ch, k=7, s=1):
+        super().__init__()
+        self.conv1 = CausalConv1D(in_ch, out_ch, k, s)
+        self.conv2 = CausalConv1D(out_ch, out_ch, k, 1, act=nn.Identity())
+        self.skip = (
+            nn.Conv1d(in_ch, out_ch, 1, s)
+            if (s != 1 or in_ch != out_ch) else nn.Identity()
+        )
+        self.act = nn.LeakyReLU(0.1, inplace=True)
+
+    def forward(self, x):
+        return self.act(self.conv2(self.conv1(x)) + self.skip(x))
+
+
 class MultiModeNVMD(nn.Module):
     """
     Encoder–decoder with K per-mode heads.
