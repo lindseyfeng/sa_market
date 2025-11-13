@@ -203,7 +203,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=15)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--alpha", type=float, default=1.0, help="weight for IMF reconstruction loss")
+    ap.add_argument("--alpha", type=float, default=0.2, help="weight for IMF reconstruction loss")
     ap.add_argument("--beta",  type=float, default=1.0, help="weight for next-step prediction loss")
     ap.add_argument("--clip-grad", type=float, default=None)
     ap.add_argument("--seed", type=int, default=1337)
