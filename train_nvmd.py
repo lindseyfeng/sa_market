@@ -178,21 +178,45 @@ def train_epoch(model, loader, opt, device, w1, w2, w3):
     return total / len(loader.dataset)
 
 
-def eval_epoch(model, loader, device):
+def eval_epoch(model, loader, device, df_imf_cols):
     model.eval()
-    total = 0
+    total_rrp = 0
+    total_imf_window = 0
+    total_imf_next = 0
+    n = 0
+
     with torch.no_grad():
-        for x, rrp_next in loader:
-            x = x.to(device)
-            rrp_next = rrp_next.to(device)
+        for (x, rrp_next, imf_win, imf_next) in loader:
+            x, rrp_next = x.to(device), rrp_next.to(device)
+            imf_win = imf_win.to(device)       # (B, 13, L)
+            imf_next = imf_next.to(device)     # (B,13)
 
-            _, recon = model(x)
-            y_pred = recon[:, :, -1]
+            # Forward
+            IMF_pred, recon = model(x)
 
-            loss = F.l1_loss(y_pred, rrp_next)
-            total += loss.item() * x.size(0)
+            # 1. IMF window loss
+            loss_imf_w = F.l1_loss(IMF_pred, imf_win)
 
-    return total / len(loader.dataset)
+            # 2. IMF next-step loss
+            IMF_pred_next = IMF_pred[:,:, -1]   # (B,13)
+            loss_imf_n = F.l1_loss(IMF_pred_next, imf_next)
+
+            # 3. RRP (sum of IMFs)
+            rrp_pred_next = recon[:,:, -1]      # (B,1)
+            loss_rrp = F.l1_loss(rrp_pred_next, rrp_next)
+
+            bs = x.size(0)
+            n += bs
+            total_imf_window += loss_imf_w.item() * bs
+            total_imf_next   += loss_imf_n.item() * bs
+            total_rrp        += loss_rrp.item() * bs
+
+    return (
+        total_rrp / n,
+        total_imf_window / n,
+        total_imf_next / n,
+    )
+
 
 
 # ===============================================================
@@ -232,15 +256,22 @@ def main():
 
     for ep in range(1, args.epochs+1):
         tr = train_epoch(model, tr_dl, opt, device, args.w1, args.w2, args.w3)
-        te = eval_epoch(model, te_dl, device)
-
-        print(f"[Epoch {ep:03d}] train MAE={tr:.4f} | test MAE={te:.4f}")
-
-        if te < best:
-            best = te
+        # te is a tuple now
+        rrp_mae, imf_window_mae, imf_next_mae = eval_epoch(model, te_dl, device)
+        
+        print(
+            f"[Epoch {ep:03d}] "
+            f"train RRP MAE={tr:.4f} | "
+            f"test RRP MAE={rrp_mae:.4f} | "
+            f"IMF-win MAE={imf_window_mae:.4f} | "
+            f"IMF-next MAE={imf_next_mae:.4f}"
+        )
+        
+        # Save checkpoint based on *RRP forecasting* only
+        if rrp_mae < best:
+            best = rrp_mae
             torch.save(model.state_dict(), args.out)
-            print(f"  → saved best checkpoint (MAE={best:.4f})")
-
+            print(f"  → saved best checkpoint (RRP MAE={best:.4f})")
 
 if __name__ == "__main__":
     main()
