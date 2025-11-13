@@ -143,6 +143,7 @@ def train_or_eval_epoch_joint(
 
     for x_raw, imf_win, imf_next, y_true in loader:
         x_raw   = x_raw.to(device)      # (B,1,L)
+        y_true = y_true.to(device)   
         imf_win = imf_win.to(device)    # (B,1,L)
         imf_next = imf_next.to(device)  # (B,1)
 
