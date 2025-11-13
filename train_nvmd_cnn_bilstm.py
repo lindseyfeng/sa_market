@@ -169,15 +169,15 @@ def train_or_eval_epoch(
       
 
     
-        scaler = MinMaxScalerND(imf_mins_tensor, imf_maxs_tensor, channel_axis=1)
-        y_pred_modes_raw = scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)  # (B,K)
-        y_target_modes_raw = scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
+        
+        y_pred_modes_raw = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)  # (B,K)
+        y_target_modes_raw = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
     
         y_pred_rrp = y_pred_modes_raw.sum(dim=1, keepdim=True)    # (B,1)
         y_true_rrp = y_target_modes_raw.sum(dim=1, keepdim=True)  # (B,1)
 
-        y_modes_raw_pred    = scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)
-        imf_target_raw      = scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)
+        y_modes_raw_pred    = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)
+        imf_target_raw      = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)
         loss_imf_next = F.mse_loss(y_modes_raw_pred, imf_target_raw)
     
         loss_rrp = F.l1_loss(y_pred_rrp, y_true_rrp)
