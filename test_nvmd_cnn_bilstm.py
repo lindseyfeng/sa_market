@@ -174,7 +174,7 @@ def main():
     ap.add_argument("--x-mode", type=str, choices=["raw","sum_norm"], default="raw",
                     help="Use raw RRP window (train default) or sum of normalized IMFs")
     # Model
-    ap.add_argument("--ckpt", default="./runs_nvmd_mrc_bilstm/best.pt",
+    ap.add_argument("--ckpt", default="./runs_nvmd_joint_mse/best.pt",
                     help="Path to training checkpoint .pt")
     ap.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     # Loader
