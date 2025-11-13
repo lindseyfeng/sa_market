@@ -127,7 +127,7 @@ def main():
     ap.add_argument("--K", type=int, default=13)
     ap.add_argument("--base", type=int, default=64)
     ap.add_argument("--d-model", type=int, default=128)
-    ap.add_argument("--n-heads", type=int, default=6)
+    ap.add_argument("--n-heads", type=int, default=8)
     ap.add_argument("--num-layers", type=int, default=6)
     ap.add_argument("--dim-ff", type=int, default=256)
     ap.add_argument("--dropout", type=float, default=0.1)
