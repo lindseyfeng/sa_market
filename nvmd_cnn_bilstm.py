@@ -96,6 +96,14 @@ class MultiModeNVMD_MRC_BiLSTM(nn.Module):
             )
             for _ in range(K)
         ])
+        
+        hidden = max(4, K // 2)   # you can change this
+
+        self.price_head = nn.Sequential(
+            nn.Linear(K, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, 1)
+        )
 
     def forward(self, x: torch.Tensor):
         """
@@ -104,6 +112,7 @@ class MultiModeNVMD_MRC_BiLSTM(nn.Module):
         returns:
             imfs_pred_norm_all: (B,K,L)
             y_modes_norm:       (B,K)
+            y_price:            (B,1)
         """
         B, C, L = x.shape
         assert C == 1, f"Expected x with 1 channel, got {C}"
@@ -117,16 +126,18 @@ class MultiModeNVMD_MRC_BiLSTM(nn.Module):
             imfs_list.append(imf_i_norm)
             y_list.append(y_i_norm)
 
-        y_modes_norm = torch.cat(y_list, dim=1)           # list of (B,1)   -> (B,K)
+        # (B,K,L)
+        imfs_pred_norm_all = torch.cat(imfs_list, dim=1)
+        # (B,K)
+        y_modes_norm = torch.cat(y_list, dim=1)
 
-        return imfs_pred_norm_all, y_modes_norm
+        y_price = self.price_head(y_modes_norm)
+
+        return imfs_pred_norm_all, y_modes_norm, y_price
 
     @torch.no_grad()
     def decompose_all(self, x: torch.Tensor):
-        """
-        Returns stacked decomposed sequences from all per-mode models:
-            (B,K,L)
-        """
+
         imfs_list = []
         for m in self.models:
             imf_i = m.decompose(x)    # (B,1,L)
