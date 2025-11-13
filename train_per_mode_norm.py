@@ -95,17 +95,12 @@ class NVMDModeDataset(Dataset):
         return self.N
 
     def __getitem__(self, i: int):
-        L = self.L
-
-        x_raw_seq = self.x_series[i:i+L]     # (L,)
-        y_raw     = self.x_series[i+L]       
+        L = self.L     
 
         imf_win_raw  = self.imf[i:i+L]       # (L,)
         imf_next_raw = self.imf[i+L]      
 
 
-        x_norm = (x_raw_seq - self.x_min) / self.x_range      # (L,)
-        y_norm = (y_raw     - self.x_min) / self.x_range      # (,)
         imf_win_norm  = (imf_win_raw  - self.imf_min) / self.imf_range
         imf_next_norm = (imf_next_raw - self.imf_min) / self.imf_range
 
@@ -114,7 +109,7 @@ class NVMDModeDataset(Dataset):
         imf_win_norm  = imf_win_norm.unsqueeze(0)   # (1, L)
         imf_next_norm = imf_next_norm.unsqueeze(0)  # (1,)
 
-        return x_norm, imf_win_norm, imf_next_norm, y_norm
+        return x_raw_seq, imf_win_norm, imf_next_norm, y_raw
 
 
 # -------------------------
@@ -169,7 +164,9 @@ def train_or_eval_epoch_joint(
         # -------- forward --------
         imf_pred_norm, imf_next_hat_norm, y_pred_norm = model(x_norm)
 
-        # -------- normalized losses --------
+        imf_pred = denorm(imf_pred_norm, imf_min, imf_max)
+        imf_next_hat = denorm(imf_next_hat_norm,   imf_min, imf_max)
+
         loss_rrp  = F.l1_loss(y_pred_norm, y_norm)
         loss_imf  = F.l1_loss(imf_next_hat_norm, imf_next)
 
@@ -192,11 +189,10 @@ def train_or_eval_epoch_joint(
         # -------- eval mode: compute real-scale MAE/RMSE --------
         if not is_train:
             # denorm RRP
-            y_pred_real = denorm(y_pred_norm, x_min, x_max)
-            y_true_real = denorm(y_norm,     x_min, x_max)
 
-            abs_err = (y_pred_real - y_true_real).abs()
-            sq_err  = (y_pred_real - y_true_real) ** 2
+
+            abs_err = (y_pred_norm - y_true_real).abs()
+            sq_err  = (y_pred_norm - y_true_real) ** 2
 
             real_rrp_mae_sum  += abs_err.mean().item() * bs
             real_rrp_rmse_sum += sq_err.mean().item() * bs
