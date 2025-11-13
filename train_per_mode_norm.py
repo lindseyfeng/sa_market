@@ -341,13 +341,13 @@ def main():
 
         print(
             f"[Epoch {ep:03d}] "
-            f"train: total={tr_tot:.6f} recon={tr_rec:.6f} pred={tr_pred:.6f} | "
-            f"val: total={va_tot:.6f} recon={va_rec:.6f} pred={va_pred:.6f}"
+            f"train: total={tr_tot:.6f} recon={tr_imf:.6f} pred={tr_rrp:.6f} | "
+            f"val: total={va_tot:.6f} recon={va_imf:.6f} pred={va_rrp:.6f}"
             f"val real-scale MAE={va_mae_real:.4f}, RMSE={va_rmse_real:.4f}"
         )
 
-        if va_tot < best_val:
-            best_val = va_tot
+        if va_imf < best_val:
+            best_val = va_imf
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
         if (args.save_every > 0) and (ep % args.save_every == 0):
