@@ -201,7 +201,7 @@ def main():
 
     # Training
     ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--alpha", type=float, default=1.0, help="weight for IMF reconstruction loss")
     ap.add_argument("--beta",  type=float, default=1.0, help="weight for next-step prediction loss")
