@@ -176,7 +176,7 @@ def train_or_eval_epoch(
 
         y_modes_raw_pred    = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)
         imf_target_raw      = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)
-        loss_imf_next = F.mse_loss(y_modes_raw_pred, imf_target_raw)
+        loss_imf_next = F.l1_loss(y_modes_raw_pred, imf_target_raw)
     
         loss_rrp = F.l1_loss(y_pred_rrp, y_true_rrp)
     
