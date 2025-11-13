@@ -50,6 +50,7 @@ class NVMD_MRC_BiLSTM(nn.Module):
             y_modes_norm:   (B, K)     # per-mode next-step (normalized) predictions
         """
         imfs_pred_norm = torch.sigmoid(self.decomposer(x))  # (B, K, L)
+        B, K, L = imfs_pred_norm.shape
 
         device = x.device
         mode_ids = torch.arange(self.K, device=device)      # (K,)
