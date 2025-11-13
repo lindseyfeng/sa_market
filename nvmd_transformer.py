@@ -12,13 +12,14 @@ from torch.utils.data import Dataset, DataLoader
 
 from nvmd_autoencoder import MultiModeNVMD
 
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 
 class PositionalEncoding(nn.Module):
-    """
-    Standard sine-cosine positional encoding for 1D sequences.
-    Expects input shape (B, L, d_model).
-    """
-    def __init__(self, d_model: int, max_len: int = 2048, dropout: float = 0.0):
+    def __init__(self, d_model: int, max_len: int = 4096, dropout: float = 0.0):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
 
@@ -44,15 +45,15 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class MultiModeTransformerRRP(nn.Module):
+class ModeTimeTransformerRRP(nn.Module):
     def __init__(
         self,
         K: int,
         seq_len: int,
-        d_model: int = 128,
-        n_heads: int = 4,
-        num_layers: int = 3,
-        dim_ff: int = 256,
+        d_model: int = 256,
+        n_heads: int = 8,
+        num_layers: int = 6,
+        dim_ff: int = 1024,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -60,9 +61,13 @@ class MultiModeTransformerRRP(nn.Module):
         self.seq_len = seq_len
         self.d_model = d_model
 
-        self.input_proj = nn.Linear(K, d_model)
 
-        self.pos_enc = PositionalEncoding(d_model, max_len=seq_len, dropout=dropout)
+        self.value_proj = nn.Linear(1, d_model)
+        self.mode_emb = nn.Embedding(K, d_model)
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+        full_len = K * seq_len + 1
+        self.pos_enc = PositionalEncoding(d_model, max_len=full_len, dropout=dropout)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -84,23 +89,32 @@ class MultiModeTransformerRRP(nn.Module):
             nn.Linear(d_model, 1),
         )
 
+
+        mode_ids = torch.arange(K).view(K, 1).expand(K, seq_len).reshape(-1)  # (K*L,)
+        self.register_buffer("mode_ids_flat", mode_ids, persistent=False)
+
+        nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
+
     def forward(self, x_modes: torch.Tensor) -> torch.Tensor:
-        
+
         B, K, L = x_modes.shape
         assert K == self.K, f"Expected K={self.K}, got {K}"
         assert L == self.seq_len, f"Expected seq_len={self.seq_len}, got {L}"
 
-        x = x_modes.permute(0, 2, 1)  # (B, L, K)
-        
-        x = self.input_proj(x)        # (B, L, d_model)
 
-        x = self.pos_enc(x)           # (B, L, d_model)
+        x_flat = x_modes.reshape(B, K * L, 1)          # (B, K*L, 1)
+        token_vals = self.value_proj(x_flat)           # (B, K*L, d_model)
 
-        h = self.encoder(x)           # (B, L, d_model)
+        mode_emb = self.mode_emb(self.mode_ids_flat)   # (K*L, d_model)
+        mode_emb = mode_emb.unsqueeze(0)               # (1, K*L, d_model)
+        x = token_vals + mode_emb                      # (B, K*L, d_model)
+        cls = self.cls_token.expand(B, 1, self.d_model)  # (B,1,d_model)
+        x = torch.cat([cls, x], dim=1)                   # (B, 1+K*L, d_model)
+        x = self.pos_enc(x)                              # (B, 1+K*L, d_model)
+        h = self.encoder(x)                              # (B, 1+K*L, d_model)
+        cls_out = h[:, 0, :]                             # (B, d_model)
 
-        h_last = h[:, -1, :]          # (B, d_model)
-
-        rrp_next_hat = self.rrp_head(h_last)  # (B, 1)
+        rrp_next_hat = self.rrp_head(cls_out)            # (B, 1)
         return rrp_next_hat
 
 
