@@ -1,16 +1,6 @@
 #!/usr/bin/env python3
-# train_nvmd_cnn_bilstm_mode.py
-#
-# Per-mode joint training:
-#   Model: NVMD_MRC_BiLSTM (per-mode: K=1)
-#   Inputs:  x_raw      = raw RRP window, shape (1, L)
-#   Targets: imf_win    = raw IMF window for ONE mode, shape (1, L)
-#            imf_next   = raw IMF at time t+L, shape (1,)
-#   Loss:    alpha * L1(imf_pred, imf_win) + beta * L1(y_mode_pred, imf_next)
-#
-# Run separately for Mode_1, Mode_2, ..., Residual by changing --mode-col.
-
-import argparse, os, json
+import os
+import argparse
 import numpy as np
 import pandas as pd
 import torch
@@ -18,308 +8,238 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
-from nvmd_cnn_bilstm import NVMD_MRC_BiLSTM  # per-mode joint model (K=1 inside)
 
+# ===============================================================
+#                DATASET (RRP + Full 13-IMF VMD)
+# ===============================================================
 
-# -------------------------
-# Repro
-# -------------------------
-def set_seed(seed: int = 1337):
-    import random
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-# -------------------------
-# Dataset: per-mode, joint training
-# -------------------------
-class NVMDModeDataset(Dataset):
+class VMD13Dataset(Dataset):
     """
-    For each window i..i+L-1:
-
-      x_raw:    raw RRP window, shape (1, L)
-      imf_win:  raw IMF window for this mode, shape (1, L)
-      imf_next: raw IMF at time t+L, shape (1,)
-
-    So index i corresponds to:
-      - history: t = i, ..., i+L-1
-      - target:  IMF(t+L)
+    Returns:
+       x_raw:  (B,1,L)     raw RRP window
+       rrp_next: (B,1)     raw next-step RRP
     """
-    def __init__(
-        self,
-        df: pd.DataFrame,
-        mode_col: str,           # e.g. "Mode_1" or "Residual"
-        rrp_col: str = "RRP",
-        seq_len: int = 1024,
-        x_mode: str = "raw",     # "raw" or "sum"
-        all_decomp_cols: list[str] | None = None,  # only needed if x_mode == "sum"
-    ):
+    def __init__(self, df, seq_len=64, rrp_col="RRP"):
         super().__init__()
         self.L = seq_len
-        self.mode_col = mode_col
-        self.x_mode = x_mode
+        rrp = df[rrp_col].to_numpy(dtype=np.float32)
 
-        if mode_col not in df.columns:
-            raise ValueError(f"mode_col '{mode_col}' not in dataframe.")
-
-        imf_np = df[mode_col].to_numpy(dtype=np.float32)   # (T,)
-        self.imf = torch.from_numpy(imf_np).contiguous()   # (T,)
-
-        if rrp_col not in df.columns:
-            raise ValueError(f"rrp_col '{rrp_col}' not in dataframe.")
-        rrp_np = df[rrp_col].to_numpy(dtype=np.float32)    # (T,)
-        self.rrp = torch.from_numpy(rrp_np).contiguous()   # (T,)
-        T = self.rrp.shape[0]
-
-        if x_mode == "raw":
-            self.x_series = self.rrp                       # (T,)
-        elif x_mode == "sum":
-            if all_decomp_cols is None:
-                raise ValueError("all_decomp_cols must be provided when x_mode='sum'")
-            imfs_np_all = df[all_decomp_cols].to_numpy(dtype=np.float32)  # (T,K_all)
-            imfs_all = torch.from_numpy(imfs_np_all).transpose(0, 1).contiguous()  # (K_all,T)
-            self.x_series = imfs_all.sum(dim=0)            # (T,)
-        else:
-            raise ValueError("x_mode must be 'raw' or 'sum'")
-
-        # We need t+L for the next-step target, so max start index is T-L-1
-        self.N = max(0, T - self.L - 1)
+        self.rrp = torch.tensor(rrp)
+        T = len(rrp)
+        self.N = T - seq_len - 1
 
     def __len__(self):
         return self.N
 
-    def __getitem__(self, i: int):
+    def __getitem__(self, i):
         L = self.L
-        # Input window: RRP or sum of IMFs, times [i, ..., i+L-1]
-        x_raw = self.x_series[i:i+L].unsqueeze(0)       # (1,L)
-        y_raw = self.x_series[i+L].unsqueeze(0)       # (1,L)
-
-        # Reconstruction window: IMF for this mode, times [i, ..., i+L-1]
-        imf_win = self.imf[i:i+L].unsqueeze(0)          # (1,L)
-
-        # Next-step target: IMF(t+L)
-        imf_next = self.imf[i+L].unsqueeze(0)           # (1,)
-
-        return x_raw, imf_win, imf_next, y_raw
+        x = self.rrp[i:i+L].unsqueeze(0)     # (1,L)
+        y = self.rrp[i+L].unsqueeze(0)       # (1,)
+        return x, y
 
 
-# -------------------------
-# Utils
-# -------------------------
-def build_default_13(df: pd.DataFrame) -> list[str]:
-    cols = [f"Mode_{i}" for i in range(1, 13)] + ["Residual"]
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns: {missing}")
-    return cols
+# ===============================================================
+#                     MULTIMODE NVMD MODEL
+# ===============================================================
+
+class CausalConv1D(nn.Module):
+    def __init__(self, in_ch, out_ch, k=7, s=1, act=nn.LeakyReLU(0.1, inplace=True)):
+        super().__init__()
+        self.k = k
+        self.conv = nn.Conv1d(in_ch, out_ch, k, s, padding=0)
+        self.act = act
+
+    def forward(self, x):
+        pad = self.k - 1
+        x = F.pad(x, (pad, 0))
+        return self.act(self.conv(x))
 
 
-# -------------------------
-# Train/Eval epoch: joint decomposer + predictor
-# -------------------------
-def train_or_eval_epoch_joint(
-    model: nn.Module,
-    loader: DataLoader,
-    device: str,
-    alpha: float,
-    beta: float,
-    optimizer=None,
-    clip_grad: float | None = None,
-):
-    """
-    alpha: weight for decomposition/reconstruction loss
-    beta:  weight for next-step prediction loss
-    Losses are computed in RAW scale (no normalization).
-    """
-    is_train = optimizer is not None
-    model.train(is_train)
+class ResCausal(nn.Module):
+    def __init__(self, in_ch, out_ch, k=7, s=1):
+        super().__init__()
+        self.conv1 = CausalConv1D(in_ch, out_ch, k, s)
+        self.conv2 = CausalConv1D(out_ch, out_ch, k, 1, act=nn.Identity())
+        self.skip = nn.Conv1d(in_ch, out_ch, 1, s) if (s != 1 or in_ch != out_ch) else nn.Identity()
+        self.act = nn.LeakyReLU(0.1, inplace=True)
 
-    total_loss_sum = 0.0
-    total_recon_sum = 0.0
-    total_pred_sum = 0.0
-    n_samples = 0
-
-    for x_raw, imf_win, imf_next, y_true in loader:
-        x_raw   = x_raw.to(device)      # (B,1,L)
-        y_true = y_true.to(device)   
-        imf_win = imf_win.to(device)    # (B,1,L)
-        imf_next = imf_next.to(device)  # (B,1)
-
-        imf_pred, y_mode_pred, y_pred = model(x_raw)    # (B,1,L), (B,1)
-        loss_pred = F.l1_loss(y_true, y_pred)
-        loss_recon = F.l1_loss(y_mode_pred, imf_next)
-
-        loss =  alpha*loss_pred+loss_recon
-
-        if is_train:
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            if clip_grad is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-            optimizer.step()
-
-        bs = x_raw.size(0)
-        n_samples += bs
-        total_loss_sum  += loss.item() * bs
-        total_recon_sum += loss_recon.item() * bs
-        total_pred_sum  += loss_pred.item() * bs
-
-    denom = max(n_samples, 1)
-    return (
-        total_loss_sum  / denom,
-        total_recon_sum / denom,
-        total_pred_sum  / denom,
-    )
+    def forward(self, x):
+        return self.act(self.conv2(self.conv1(x)) + self.skip(x))
 
 
-# -------------------------
-# Main
-# -------------------------
+class MultiModeNVMD(nn.Module):
+    def __init__(self, K=13, base=64):
+        super().__init__()
+        # Encoder
+        self.enc1 = ResCausal(1, base)
+        self.enc2 = ResCausal(base, base*2, s=2)
+        self.enc3 = ResCausal(base*2, base*4, k=5, s=2)
+        self.enc4 = ResCausal(base*4, base*8, k=5, s=2)
+
+        # Bottleneck
+        self.bott = nn.Sequential(
+            ResCausal(base*8, base*8, k=3),
+            ResCausal(base*8, base*8, k=3)
+        )
+
+        # Decoder
+        self.up1 = nn.ConvTranspose1d(base*8, base*4, 4, 2, 1)
+        self.dec1 = ResCausal(base*4, base*4, k=5)
+
+        self.up2 = nn.ConvTranspose1d(base*4, base*2, 4, 2, 1)
+        self.dec2 = ResCausal(base*2, base*2, k=5)
+
+        self.up3 = nn.ConvTranspose1d(base*2, base, 4, 2, 1)
+        self.dec3 = ResCausal(base, base, k=7)
+
+        # IMF heads (K=13)
+        self.heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(base, base, 3, padding=1, groups=base),
+                nn.GELU(),
+                nn.Conv1d(base, 1, 1)
+            ) for _ in range(K)
+        ])
+
+    def forward(self, x):
+        # Encoder
+        e1 = self.enc1(x)
+        e2 = self.enc2(e1)
+        e3 = self.enc3(e2)
+        e4 = self.enc4(e3)
+
+        # Bottleneck
+        h = self.bott(e4)
+
+        # Decoder
+        d1 = self.dec1(self.up1(h) + e3)
+        d2 = self.dec2(self.up2(d1) + e2)
+        d3 = self.dec3(self.up3(d2) + e1)
+
+        # All IMFs
+        imfs = torch.cat([head(d3) for head in self.heads], dim=1)   # (B,13,L)
+
+        # Sum = RRP reconstruction
+        recon = imfs.sum(dim=1, keepdim=True)                        # (B,1,L)
+
+        return imfs, recon
+
+
+# ===============================================================
+#                 LOSSES (DECORR + BANDWIDTH)
+# ===============================================================
+
+def decorrelation_loss(imfs):
+    B, K, L = imfs.shape
+    loss = 0
+    for i in range(K):
+        for j in range(i+1, K):
+            ci = imfs[:,i] - imfs[:,i].mean(dim=1, keepdim=True)
+            cj = imfs[:,j] - imfs[:,j].mean(dim=1, keepdim=True)
+            corr = (ci * cj).mean()
+            loss += corr.abs()
+    return loss / (K*(K-1)/2)
+
+
+def bandwidth_loss(imfs):
+    freqs = torch.fft.rfft(imfs, dim=-1).abs()
+    w = torch.linspace(0,1,freqs.size(-1),device=imfs.device)
+    return (freqs * w).mean()
+
+
+# ===============================================================
+#                     TRAIN / EVAL EPOCH
+# ===============================================================
+
+def train_epoch(model, loader, opt, device, w1, w2, w3):
+    model.train()
+    total = 0
+    for x, rrp_next in loader:
+        x = x.to(device)              # (B,1,L)
+        rrp_next = rrp_next.to(device)
+
+        opt.zero_grad()
+        imfs, recon = model(x)
+
+        # Take the last time step as prediction
+        y_pred = recon[:, :, -1]      # (B,1)
+
+        # Losses
+        L_recon = F.l1_loss(y_pred, rrp_next)
+        L_corr  = decorrelation_loss(imfs)
+        L_band  = bandwidth_loss(imfs)
+
+        loss = w1*L_recon + w2*L_corr + w3*L_band
+        loss.backward()
+        opt.step()
+
+        total += L_recon.item() * x.size(0)
+
+    return total / len(loader.dataset)
+
+
+def eval_epoch(model, loader, device):
+    model.eval()
+    total = 0
+    with torch.no_grad():
+        for x, rrp_next in loader:
+            x = x.to(device)
+            rrp_next = rrp_next.to(device)
+
+            _, recon = model(x)
+            y_pred = recon[:, :, -1]
+
+            loss = F.l1_loss(y_pred, rrp_next)
+            total += loss.item() * x.size(0)
+
+    return total / len(loader.dataset)
+
+
+# ===============================================================
+#                           MAIN
+# ===============================================================
+
 def main():
     ap = argparse.ArgumentParser()
-    # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
-    ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
-    ap.add_argument("--rrp-col",    type=str, default="RRP")
-    ap.add_argument("--mode-col",   type=str, default="Mode_1",
-                    help="Which IMF column to train this model on (e.g. Mode_1, ..., Residual)")
+    ap.add_argument("--test-csv",  default="VMD_modes_with_residual_2021_2022.csv")
     ap.add_argument("--seq-len", type=int, default=64)
-    ap.add_argument("--x-mode", type=str, choices=["raw", "sum"], default="raw",
-                    help="Model input: raw RRP window (default) or sum of raw IMFs")
-
-    # Model
+    ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--base", type=int, default=64)
-    ap.add_argument("--lstm-hidden", type=int, default=256)
-    ap.add_argument("--lstm-layers", type=int, default=3)
-    ap.add_argument("--bidirectional", action="store_true", default=True)
-
-    # Training
-    ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--batch", type=int, default=128)
-    ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--alpha", type=float, default=0.1, help="weight for IMF reconstruction loss")
-    ap.add_argument("--beta",  type=float, default=0.1, help="weight for next-step prediction loss")
-    ap.add_argument("--clip-grad", type=float, default=None)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--num-workers", type=int, default=0)
-
-    # I/O
-    ap.add_argument("--outdir", type=str, default="./runs_nvmd_cnn_bilstm_mode")
-    ap.add_argument("--save-every", type=int, default=1)
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--w1", type=float, default=1.0)
+    ap.add_argument("--w2", type=float, default=0.1)
+    ap.add_argument("--w3", type=float, default=0.05)
+    ap.add_argument("--out", type=str, default="./nmvd13.pt")
     args = ap.parse_args()
 
-    set_seed(args.seed)
-    os.makedirs(args.outdir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load data
-    df_tr = pd.read_csv(args.train_csv)
-    df_va = pd.read_csv(args.val_csv)
+    df_train = pd.read_csv(args.train_csv)
+    df_test  = pd.read_csv(args.test_csv)
 
-    # All decomp columns only needed if x_mode == "sum"
-    all_decomp_cols = None
-    if args.x_mode == "sum":
-        all_decomp_cols = build_default_13(df_tr)
+    tr_ds = VMD13Dataset(df_train, seq_len=args.seq_len)
+    te_ds = VMD13Dataset(df_test,  seq_len=args.seq_len)
 
-    # Datasets / Loaders
-    tr_ds = NVMDModeDataset(
-        df=df_tr,
-        mode_col=args.mode_col,
-        rrp_col=args.rrp_col,
-        seq_len=args.seq_len,
-        x_mode=args.x_mode,
-        all_decomp_cols=all_decomp_cols,
-    )
-    va_ds = NVMDModeDataset(
-        df=df_va,
-        mode_col=args.mode_col,
-        rrp_col=args.rrp_col,
-        seq_len=args.seq_len,
-        x_mode=args.x_mode,
-        all_decomp_cols=all_decomp_cols,
-    )
+    tr_dl = DataLoader(tr_ds, batch_size=args.batch, shuffle=True)
+    te_dl = DataLoader(te_ds, batch_size=args.batch)
 
-    pin = (device == "cuda")
-    tr_dl = DataLoader(tr_ds, batch_size=args.batch, shuffle=True,
-                       num_workers=args.num_workers, pin_memory=pin, drop_last=True)
-    va_dl = DataLoader(va_ds, batch_size=args.batch, shuffle=False,
-                       num_workers=args.num_workers, pin_memory=pin)
-
-    # Model (per-mode joint NVMD + predictor)
-    model = NVMD_MRC_BiLSTM(
-        signal_len=args.seq_len,
-        base=args.base,
-        lstm_hidden=args.lstm_hidden,
-        lstm_layers=args.lstm_layers,
-        bidirectional=args.bidirectional,
-        freeze_decomposer=False,
-    ).to(device)
-
+    model = MultiModeNVMD(K=13, base=args.base).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    best_val = float("inf")
-    best_state = None
+    best = 1e9
 
-    for ep in range(1, args.epochs + 1):
-        if ep > 10:
-            args.alpha, args.beta = 0.1, 1
-        tr_tot, tr_rec, tr_pred = train_or_eval_epoch_joint(
-            model, tr_dl, device,
-            alpha=args.alpha,
-            beta=args.beta,
-            optimizer=opt,
-            clip_grad=args.clip_grad,
-        )
-        va_tot, va_rec, va_pred = train_or_eval_epoch_joint(
-            model, va_dl, device,
-            alpha=args.alpha,
-            beta=args.beta,
-            optimizer=None,
-            clip_grad=None,
-        )
+    for ep in range(1, args.epochs+1):
+        tr = train_epoch(model, tr_dl, opt, device, args.w1, args.w2, args.w3)
+        te = eval_epoch(model, te_dl, device)
 
-        print(
-            f"[Epoch {ep:03d}] "
-            f"train: total={tr_tot:.6f} recon={tr_rec:.6f} pred={tr_pred:.6f} | "
-            f"val: total={va_tot:.6f} recon={va_rec:.6f} pred={va_pred:.6f}"
-        )
+        print(f"[Epoch {ep:03d}] train MAE={tr:.4f} | test MAE={te:.4f}")
 
-        # Track best on validation total
-        if va_tot < best_val:
-            best_val = va_tot
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-
-        # periodic checkpoint
-        if (args.save_every > 0) and (ep % args.save_every == 0):
-            ck = {
-                "epoch": ep,
-                "val_best": best_val,
-                "model_state": model.state_dict(),
-                "args": vars(args),
-                "mode_col": args.mode_col,
-                "notes": "Per-mode joint NVMD + CNN-BiLSTM (raw scale)",
-            }
-            torch.save(ck, os.path.join(args.outdir, f"{args.mode_col}_epoch_{ep:03d}.pt"))
-
-    # Save best
-    if best_state is not None:
-        out_best = os.path.join(args.outdir, f"{args.mode_col}_best.pt")
-        torch.save(
-            {
-                "epoch": "best",
-                "val_best": best_val,
-                "model_state": best_state,
-                "args": vars(args),
-                "mode_col": args.mode_col,
-                "notes": "Per-mode joint NVMD + CNN-BiLSTM (raw scale)",
-            },
-            out_best,
-        )
-        print(f"Saved best checkpoint for {args.mode_col} → {out_best}")
-    else:
-        print("No best state captured; nothing saved.")
+        if te < best:
+            best = te
+            torch.save(model.state_dict(), args.out)
+            print(f"  → saved best checkpoint (MAE={best:.4f})")
 
 
 if __name__ == "__main__":
