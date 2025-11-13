@@ -145,8 +145,6 @@ def train_or_eval_epoch(
     """
     Joint training:
 
-      - IMF loss: MSE(imfs_pred_norm, imfs_true_norm)
-      - Pred loss: MSE(y_pred_raw, y_true_raw)
       - Total: alpha * IMF_MSE + beta * Pred_MSE
     """
     is_train = optimizer is not None
@@ -175,17 +173,17 @@ def train_or_eval_epoch(
             elif y_modes_norm.size(1) == 1:
                 y_modes_norm = y_modes_norm.squeeze(1)
 
-        # IMF MSE in normalized space
-        loss_decomp = F.mse_loss(imfs_pred_norm, imfs_true_norm)
+        # # IMF MSE in normalized space
+        # loss_decomp = F.mse_loss(imfs_pred_norm, imfs_true_norm)
 
         # denorm per-mode scalar predictions to raw IMF scale
         y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
         y_pred = y_modes_raw.sum(dim=1, keepdim=True)                            # (B,1)
 
         # final RRP prediction MSE
-        loss_pred = F.mse_loss(y_pred, yb)
+        loss_pred = F.l1_loss(y_pred, yb)
 
-        loss = alpha * loss_decomp + beta * loss_pred
+        loss = loss_pred
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
