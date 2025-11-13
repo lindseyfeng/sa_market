@@ -12,7 +12,7 @@ class NVMD_MRC_BiLSTM(nn.Module):
     def __init__(
         self,
         signal_len: int,
-        K: int = 13,                # number of decomposed signals
+        K: int = 13,                
         base: int = 64,
         lstm_hidden: int = 128,
         lstm_layers: int = 3,
@@ -43,12 +43,6 @@ class NVMD_MRC_BiLSTM(nn.Module):
         )
 
     def forward(self, x):
-        """
-        x: (B, 1, L)
-        returns:
-            imfs_pred_norm: (B, K, L)  # normalized per-mode sequences from decomposer
-            y_modes_norm:   (B, K)     # per-mode next-step (normalized) predictions
-        """
         imfs_pred_norm = torch.sigmoid(self.decomposer(x))  # (B, K, L)
         B, K, L = imfs_pred_norm.shape
 
@@ -56,13 +50,11 @@ class NVMD_MRC_BiLSTM(nn.Module):
         mode_ids = torch.arange(self.K, device=device)      # (K,)
         mode_emb = self.mode_embed(mode_ids)                # (K, d_mode_embed)
 
-        # Expand to batch: (B,K,d_mode_embed)
+        
         mode_emb = mode_emb.unsqueeze(0).expand(B, -1, -1)  # (B,K,d_mode_embed)
 
-        imfs_flat = imfs_pred_norm.view(B * self.K, 1, L)   # (B*K,1,L)
-
-        mode_emb_flat = mode_emb.view(B * self.K, self.d_mode_embed)  # (B*K,d)
-        mode_emb_flat = mode_emb_flat.unsqueeze(-1).expand(-1, -1, L) # (B*K,d,L)
+        mode_emb_flat = mode_emb.reshape(B * self.K, self.d_mode_embed)    # (B*K,d)
+        mode_emb_flat = mode_emb_flat.unsqueeze(-1).expand(-1, -1, L)  # (B*K,d,L)
 
         predictor_in = torch.cat([imfs_flat, mode_emb_flat], dim=1)
 
