@@ -41,60 +41,75 @@ class MinMaxScalerND:
         return x * rng + mins
 
 class Decomp13Dataset(Dataset):
+
     def __init__(
         self,
         df: pd.DataFrame,
-        decomp_cols: list[str],
-        seq_len: int = 8,
-        target_col: str = "RRP",
+        decomp_cols: list[str],         # IMF columns (e.g. Mode_1..Mode_12, Residual)
+        seq_len: int = 9,
+        rrp_col: str = "RRP",
         imf_mins: np.ndarray | None = None,
         imf_maxs: np.ndarray | None = None,
-        x_mode: str = "raw",  # "raw" (default, matches training) or "sum_norm"
     ):
         self.decomp_cols = decomp_cols
         self.K = len(decomp_cols)
         self.L = seq_len
 
+        # ----- raw IMFs: (T, K) -> (K, T)
         imfs_np = df[decomp_cols].to_numpy(dtype=np.float32)   # (T, K)
-        self.imfs = torch.tensor(imfs_np).transpose(0,1)       # (K, T)
+        self.imfs_raw = torch.tensor(imfs_np).transpose(0, 1)  # (K, T)
 
-        target_np = df[target_col].to_numpy(dtype=np.float32)  # (T,)
-        self.rrp = torch.tensor(target_np, dtype=torch.float32)
-        T = len(self.rrp)
+        # raw RRP series (for x windows only)
+        rrp_np = df[rrp_col].to_numpy(dtype=np.float32)
+        self.rrp_raw = torch.tensor(rrp_np, dtype=torch.float32)  # (T,)
+        T = len(self.rrp_raw)
 
-        # per-IMF min/max for normalization (use train/ckpt mins/maxs if provided)
+        # per-IMF min/max for normalization (global over the dataset or given from train)
         if imf_mins is None or imf_maxs is None:
-            imf_mins = self.imfs.min(dim=1).values.numpy()
-            imf_maxs = self.imfs.max(dim=1).values.numpy()
-        self.imf_mins = np.asarray(imf_mins)
-        self.imf_maxs = np.asarray(imf_maxs)
+            imf_mins = self.imfs_raw.min(dim=1).values.numpy()   # (K,)
+            imf_maxs = self.imfs_raw.max(dim=1).values.numpy()   # (K,)
+        self.imf_mins = np.asarray(imf_mins, dtype=np.float32)
+        self.imf_maxs = np.asarray(imf_maxs, dtype=np.float32)
 
-        mins = torch.tensor(self.imf_mins).unsqueeze(1)  # (K,1)
+        mins = torch.tensor(self.imf_mins).unsqueeze(1)  # (K, 1)
         rngs = (torch.tensor(self.imf_maxs) - torch.tensor(self.imf_mins)).unsqueeze(1) + 1e-12
-        self.imfs_norm = (self.imfs - mins) / rngs       # (K,T)
+        self.imfs_norm = (self.imfs_raw - mins) / rngs   # (K, T) in [0, 1] ideally
 
-        # x series
-        if x_mode == "raw":
-            self.x_series = self.rrp                     # raw RRP window
-        elif x_mode == "sum_norm":
-            self.x_series = self.imfs_norm.sum(dim=0)    # normalized composite
-        else:
-            raise ValueError("x_mode must be 'raw' or 'sum_norm'")
-        self.x_mode = x_mode
+        # number of usable windows (need L points for history + 1 for target)
+        self.N = T - self.L - 1
+        if self.N < 0:
+            self.N = 0
 
-        self.N = max(0, T - self.L - 1)
+    def __len__(self):
+        return self.N
 
-    def __len__(self): return self.N
-
-    def __getitem__(self, i):
+    def __getitem__(self, i: int):
+        """
+        i corresponds to window [i, ..., i+L-1] and target at time i+L.
+        """
         L = self.L
-        x  = self.x_series[i:i+L].unsqueeze(0)  # (1,L)
-        imf_win = self.imfs_norm[:, i:i+L]      # (K,L)
-        y  = self.rrp[i+L]                      # scalar
-        return x, imf_win, y.unsqueeze(0)       # (1,L), (K,L), (1,)
+
+        # x_raw: raw RRP window, shape (1, L)
+        x_raw = self.rrp_raw[i : i + L].unsqueeze(0)            # (1, L)
+
+        # imf_in_norm: normalized IMF window, shape (K, L)
+        imf_in_norm = self.imfs_norm[:, i : i + L]              # (K, L)
+
+        # imf_target_norm: normalized IMFs at time t+L, shape (K,)
+        imf_target_norm = self.imfs_norm[:, i + L]              # (K,)
+
+        return x_raw, imf_in_norm, imf_target_norm
 
     def scalers(self):
-        return dict(imf_mins=self.imf_mins, imf_maxs=self.imf_maxs)
+        """
+        For denorm inside training:
+           imf_raw = imf_norm * (max - min) + min
+        """
+        return dict(
+            imf_mins=self.imf_mins,
+            imf_maxs=self.imf_maxs,
+        )
+
 
 def build_default_13(df: pd.DataFrame) -> list[str]:
     cols = [f"Mode_{i}" for i in range(1, 13)] + ["Residual"]
@@ -115,54 +130,38 @@ def eval_epoch(model, loader, device, imf_mins, imf_maxs, crop:int=0, return_ser
 
     y_true_all, y_pred_all = [], []
     recon_mae_accum, n_batches = 0.0, 0
+    for x_raw, imf_in_norm, imf_target_norm in loader:
+        x_raw = x_raw.to(device)                  # (B,1,L)
+        imf_in_norm = imf_in_norm.to(device)      # (B,K,L)
+        imf_target_norm = imf_target_norm.to(device)  # (B,K)
+    
+        imfs_pred_norm, y_modes_norm_pred = model(x_raw)  # (B,K,L), (B,K)
+    
+        loss_imf = F.mse_loss(imfs_pred_norm, imf_in_norm)
+    
+        
+        y_pred_modes_raw = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)  # (B,K)
+        y_target_modes_raw = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
+    
+        y_pred_rrp = y_pred_modes_raw.sum(dim=1, keepdim=True)    # (B,1)
+        y_true_rrp = y_target_modes_raw.sum(dim=1, keepdim=True)  # (B,1)
 
-    for xb, imfs_true_norm, yb in loader:
-        xb = xb.to(device)
-        imfs_true_norm = imfs_true_norm.to(device)  # (B,K,L)
-        yb = yb.to(device)                          # (B,1)
+        y_modes_raw_pred    = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)
+        imf_target_raw      = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)
+        loss_imf_next = F.mse_loss(y_modes_raw_pred, imf_target_raw)
+    
+        loss_rrp = F.l1_loss(y_pred_rrp, y_true_rrp)
+    
+        # then combine however you want:
+        # total_loss = alpha * loss_imf + beta * loss_imf_next + gamma * loss_rrp
+    
 
-        imfs_pred_norm, y_pred_modes_norm = model(xb)  # (B,K,L), (B,K) or (B,K,1)/(B,1,K)
+        loss = beta*loss_rrp + alpha*loss_imf_next
 
-        # unify (B,K)
-        yk = y_pred_modes_norm
-        if yk.dim() == 3:
-            if yk.size(-1) == 1:    # (B,K,1) -> (B,K)
-                yk = yk.squeeze(-1)
-            elif yk.size(1) == 1:   # (B,1,K) -> (B,K)
-                yk = yk.squeeze(1)
+    mae  = torch.mean(torch.abs(y_pred_rrp - y_true_rrp)).item()
+    rmse = torch.sqrt(torch.mean((y_pred_rrp - y_true_rrp) ** 2)).item()
 
-        # denorm per-mode scalar next-step preds and sum
-        y_pred_modes = yk * rng + mins              # (B,K)
-        y_pred = y_pred_modes.sum(dim=1, keepdim=True)  # (B,1)
-
-        y_true_all.append(yb)
-        y_pred_all.append(y_pred)
-
-        # optional reconstruction-of-sum metric (time-domain)
-        if crop > 0:
-            imfs_pred_crop = imfs_pred_norm[:, :, crop:-crop]
-            imfs_true_crop = imfs_true_norm[:, :, crop:-crop]
-            imfs_pred = imfs_pred_crop * rng_L + mins_L
-            imfs_true = imfs_true_crop * rng_L + mins_L
-        else:
-            imfs_pred = imfs_pred_norm * rng_L + mins_L
-            imfs_true = imfs_true_norm * rng_L + mins_L
-
-        sig_pred  = imfs_pred.sum(dim=1)  # (B,L-2*crop or L)
-        sig_true  = imfs_true.sum(dim=1)
-        recon_mae_accum += torch.mean(torch.abs(sig_pred - sig_true)).item()
-        n_batches += 1
-
-    y_true_all = torch.cat(y_true_all, dim=0).view(-1)
-    y_pred_all = torch.cat(y_pred_all, dim=0).view(-1)
-
-    mae  = torch.mean(torch.abs(y_pred_all - y_true_all)).item()
-    rmse = torch.sqrt(torch.mean((y_pred_all - y_true_all) ** 2)).item()
-    recon_mae = recon_mae_accum / max(n_batches, 1)
-
-    if return_series:
-        return mae, rmse, recon_mae, y_true_all.cpu().numpy(), y_pred_all.cpu().numpy()
-    return mae, rmse, recon_mae
+        return mae, rmse, 
 
 def main():
     ap = argparse.ArgumentParser()
