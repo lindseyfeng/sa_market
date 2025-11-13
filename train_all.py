@@ -9,6 +9,68 @@ from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
 from nvmd_cnn_bilstm import MultiModeNVMD_MRC_BiLSTM 
+from nvmd_cnn_bilstm import NVMD_MRC_BiLSTM  
+
+
+def build_multimode_from_checkpoints(
+    ckpt_dir: str,
+    mode_cols: list[str],
+    use_sigmoid: bool,
+    device: str,
+) -> MultiModeNVMD_MRC_BiLSTM:
+    """
+    For each mode_col, load its *_best.pt, read saved args, construct
+    a NVMD_MRC_BiLSTM with those hyperparams, load weights, and
+    wrap everything in MultiModeNVMD_MRC_BiLSTM.
+    """
+    models = []
+    seq_len_ref = None
+
+    for mode_col in mode_cols:
+        ckpt_path = os.path.join(ckpt_dir, f"{mode_col}_best.pt")
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
+        state = torch.load(ckpt_path, map_location="cpu")
+
+        if "model_state" in state:
+            sd = state["model_state"]
+        else:
+            sd = state
+
+        args_m = state.get("args", {})
+        # fallbacks in case some keys are missing
+        seq_len = args_m.get("seq_len") or args_m.get("seq-len")
+        base = args_m.get("base", 128)
+        lstm_hidden = args_m.get("lstm_hidden", 128)
+        lstm_layers = args_m.get("lstm_layers", 3)
+        bidirectional = args_m.get("bidirectional", True)
+
+        if seq_len_ref is None:
+            seq_len_ref = seq_len
+        else:
+            assert seq_len == seq_len_ref, \
+                f"seq_len mismatch: {seq_len} vs {seq_len_ref}"
+
+        # build per-mode model with its own hyperparams
+        m = NVMD_MRC_BiLSTM(
+            signal_len=seq_len,
+            base=base,
+            lstm_hidden=lstm_hidden,
+            lstm_layers=lstm_layers,
+            bidirectional=bidirectional,
+            freeze_decomposer=False,
+            use_sigmoid=use_sigmoid,
+        ).to(device)
+
+        m.load_state_dict(sd, strict=False)
+        models.append(m)
+        print(f"[build] loaded {mode_col} with base={base}, hidden={lstm_hidden}, "
+              f"layers={lstm_layers}, bidir={bidirectional}")
+
+    # now wrap all submodels into one multimode model
+    multimode = MultiModeNVMD_MRC_BiLSTM(models=models, use_sigmoid=use_sigmoid).to(device)
+    return multimode
 
 
 
@@ -241,19 +303,17 @@ def main():
     print(f"[info] Train samples: {len(tr_ds)}, Val samples: {len(va_ds)}")
 
     mode_cols = default_mode_cols()  # ["Mode_1", ..., "Mode_12", "Residual"]
-    model = MultiModeNVMD_MRC_BiLSTM(
-        signal_len=args.seq_len,
-        K=args.K,
-        base=args.base,
-        lstm_hidden=args.lstm_hidden,
-        lstm_layers=args.lstm_layers,
-        bidirectional=args.bidirectional,
-        freeze_decomposer=False,     # doesn't matter; we train everything
+
+    mode_cols = [f"Mode_{i}" for i in range(1, 13)] + ["Residual"]  # or whatever you use
+
+    model = build_multimode_from_checkpoints(
+        ckpt_dir=args.ckpt_dir,
+        mode_cols=mode_cols,
         use_sigmoid=args.use_sigmoid,
-    ).to(device)
+        device=device,
+    )
 
 
-    load_per_mode_checkpoints(model, args.ckpt_dir, mode_cols)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     best_val = float("inf")
