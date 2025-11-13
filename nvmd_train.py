@@ -250,13 +250,13 @@ def main():
     best_state = None
 
     for ep in range(1, args.epochs + 1):
-        tr_tot, tr_rec, tr_sum = train_or_eval_epoch_raw(
+        tr_tot, tr_rec, tr_sum = train_or_eval_epoch(
             model, tr_dl, device,
             optimizer=opt,
             clip_grad=args.clip_grad,
             sum_reg=args.sum_reg
         )
-        va_tot, va_rec, va_sum = train_or_eval_epoch_raw(
+        va_tot, va_rec, va_sum = train_or_eval_epoch(
             model, va_dl, device,
             optimizer=None,
             sum_reg=args.sum_reg
