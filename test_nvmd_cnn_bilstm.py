@@ -257,7 +257,7 @@ def main():
         df=df,
         decomp_cols=decomp_cols,
         seq_len=args.seq_len,
-        target_col=args.target_col,
+        rrp_col=args.target_col,
         imf_mins=imf_mins,
         imf_maxs=imf_maxs,
         x_mode=args.x_mode
