@@ -1,18 +1,4 @@
-#!/usr/bin/env python3
-# train_nvmd_multimode_price.py
-#
-# Stage 2: joint training of all modes + price_head.
-#
-# For each window i..i+L-1:
-#   x_raw:    raw RRP (or sum of IMFs) window, shape (1, L)
-#   rrp_next: raw RRP(t+L), shape (1,)
-#
-# Model: MultiModeNVMD_MRC_BiLSTM
-#   - K per-mode NVMD_MRC_BiLSTM blocks (loaded from *_best.pt)
-#   - MLP price_head mapping K mode outputs -> single price
-#
-# Loss: L1(real RRP, predicted RRP) on raw scale.
-#       (NO decomposition loss and NO IMF next-step loss here.)
+
 
 import argparse, os, json
 import numpy as np
@@ -22,12 +8,10 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
-from model import MultiModeNVMD_MRC_BiLSTM  # <-- make sure this path is right
+from nvmd_cnn_bilstm import MultiModeNVMD_MRC_BiLSTM 
 
 
-# -------------------------
-# Repro
-# -------------------------
+
 def set_seed(seed: int = 1337):
     import random
     random.seed(seed)
@@ -36,9 +20,6 @@ def set_seed(seed: int = 1337):
     torch.cuda.manual_seed_all(seed)
 
 
-# -------------------------
-# Dataset: just RRP windows + next-step RRP
-# -------------------------
 class PriceDataset(Dataset):
     """
     For each window i..i+L-1:
@@ -94,9 +75,6 @@ class PriceDataset(Dataset):
         return x_raw, rrp_next
 
 
-# -------------------------
-# Helpers
-# -------------------------
 def build_default_13(df: pd.DataFrame) -> list[str]:
     cols = [f"Mode_{i}" for i in range(1, 13)] + ["Residual"]
     missing = [c for c in cols if c not in df.columns]
@@ -114,14 +92,6 @@ def load_per_mode_checkpoints(
     ckpt_dir: str,
     mode_cols: list[str],
 ):
-    """
-    Load each trained single-mode NVMD_MRC_BiLSTM into model.models[k].
-
-    Assumes per-mode checkpoints are named:
-        <ckpt_dir>/<mode_col>_best.pt
-
-    and contain "model_state" (from your per-mode script) or a plain state_dict.
-    """
     assert len(mode_cols) == model.K, \
         f"model.K={model.K}, but got {len(mode_cols)} mode_cols."
 
@@ -143,10 +113,6 @@ def load_per_mode_checkpoints(
         # strict=False to ignore optimizer keys etc.
         model.models[k].load_state_dict(sd, strict=False)
 
-
-# -------------------------
-# Train / Eval epochs
-# -------------------------
 def train_or_eval_epoch_rrp(
     model: nn.Module,
     loader: DataLoader,
@@ -187,10 +153,6 @@ def train_or_eval_epoch_rrp(
     denom = max(n_samples, 1)
     return total_loss_sum / denom  # mean L1
 
-
-# -------------------------
-# Main
-# -------------------------
 def main():
     ap = argparse.ArgumentParser()
 
@@ -278,7 +240,6 @@ def main():
 
     print(f"[info] Train samples: {len(tr_ds)}, Val samples: {len(va_ds)}")
 
-    # Multi-mode model: all params will be updated
     mode_cols = default_mode_cols()  # ["Mode_1", ..., "Mode_12", "Residual"]
     model = MultiModeNVMD_MRC_BiLSTM(
         signal_len=args.seq_len,
@@ -291,10 +252,8 @@ def main():
         use_sigmoid=args.use_sigmoid,
     ).to(device)
 
-    # Initialize from per-mode checkpoints (but DO NOT freeze)
-    load_per_mode_checkpoints(model, args.ckpt_dir, mode_cols)
 
-    # Optimizer over ALL parameters (per-mode + price_head)
+    load_per_mode_checkpoints(model, args.ckpt_dir, mode_cols)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     best_val = float("inf")
