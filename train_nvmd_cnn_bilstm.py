@@ -137,7 +137,7 @@ def train_or_eval_epoch_raw_single_mode(
         imf_pred = model(x_win)    # (B,1,L)
 
         # reconstruction loss in RAW scale
-        loss_recon = huber(imf_pred, y_win)  # scalar
+        loss_recon = f.l1_loss(imf_pred, y_win)  # scalar
 
         loss = loss_recon
 
