@@ -8,8 +8,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
-from nvmd_cnn_bilstm import NVMDMultiModePriceModel   # <-- your big model
-from nvmd_autoencoder import NVMD_Autoencoder           # <-- decomposer architecture
+from nvmd_cnn_bilstm import NVMDMultiModePriceModel   
+from nvmd_autoencoder import MultiModeNVMD      
 
 
 # ==========================================================
