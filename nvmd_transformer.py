@@ -119,7 +119,7 @@ class NVMDTransformerRRPModel(nn.Module):
         freeze_decomposer: bool = True,
     ):
         super().__init__()
-        self.decomposer = NVMD_Autoencoder(
+        self.decomposer = MultiModeNVMD(
             in_ch=1,
             base=base,
             K=K,
