@@ -194,19 +194,19 @@ def main():
                     help="Model input: raw RRP window (default) or sum of raw IMFs")
 
     # Model
-    ap.add_argument("--base", type=int, default=128)
-    ap.add_argument("--lstm-hidden", type=int, default=128)
+    ap.add_argument("--base", type=int, default=256)
+    ap.add_argument("--lstm-hidden", type=int, default=256)
     ap.add_argument("--lstm-layers", type=int, default=3)
     ap.add_argument("--bidirectional", action="store_true", default=True)
 
     # Training
-    ap.add_argument("--epochs", type=int, default=15)
+    ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=128)
-    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--alpha", type=float, default=0.2, help="weight for IMF reconstruction loss")
     ap.add_argument("--beta",  type=float, default=1.0, help="weight for next-step prediction loss")
     ap.add_argument("--clip-grad", type=float, default=None)
-    ap.add_argument("--seed", type=int, default=1337)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num-workers", type=int, default=0)
 
     # I/O
