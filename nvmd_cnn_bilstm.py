@@ -24,6 +24,7 @@ class NVMD_MRC_BiLSTM(nn.Module):
         super().__init__()
         self.signal_len = signal_len
         self.K = K
+        self.d_mode_embed = d_mode_embed
 
         self.decomposer = NVMD_Autoencoder(in_ch=1, base=base, K=K, signal_len=signal_len)
 
