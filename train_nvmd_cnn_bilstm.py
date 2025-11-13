@@ -223,7 +223,7 @@ def main():
     ap.add_argument("--bidirectional", action="store_true", default=True)
 
     # Training
-    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--alpha", type=float, default=1.0, help="weight for IMF MSE")
