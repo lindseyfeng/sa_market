@@ -145,16 +145,10 @@ def train_or_eval_epoch_joint(
         imf_win = imf_win.to(device)    # (B,1,L)
         imf_next = imf_next.to(device)  # (B,1)
 
-        # Forward: per-mode model returns reconstructed IMF and next-step mode
         imf_pred, y_mode_pred = model(x_raw)    # (B,1,L), (B,1)
-
-        # Reconstruction loss in raw scale
         loss_recon = F.l1_loss(imf_pred, imf_win)
-
-        # Next-step prediction loss in raw scale
         loss_pred = F.l1_loss(y_mode_pred, imf_next)
 
-        # Total combined loss
         loss = alpha * loss_recon + beta * loss_pred
 
         if is_train:
@@ -204,7 +198,7 @@ def main():
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--alpha", type=float, default=1.0, help="weight for IMF reconstruction loss")
-    ap.add_argument("--beta",  type=float, default=1.0, help="weight for next-step prediction loss")
+    ap.add_argument("--beta",  type=float, default=0.1, help="weight for next-step prediction loss")
     ap.add_argument("--clip-grad", type=float, default=None)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num-workers", type=int, default=0)
@@ -267,6 +261,8 @@ def main():
     best_state = None
 
     for ep in range(1, args.epochs + 1):
+        if ep > 10:
+            args.alpha, args.beta = 0.1, 1
         tr_tot, tr_rec, tr_pred = train_or_eval_epoch_joint(
             model, tr_dl, device,
             alpha=args.alpha,
