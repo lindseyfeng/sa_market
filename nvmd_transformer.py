@@ -120,7 +120,6 @@ class NVMDTransformerRRPModel(nn.Module):
     ):
         super().__init__()
         self.decomposer = MultiModeNVMD(
-            in_ch=1,
             base=base,
             K=K,
             signal_len=seq_len,
