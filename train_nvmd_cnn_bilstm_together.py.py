@@ -184,8 +184,8 @@ def train_or_eval_epoch_joint(
 def main():
     ap = argparse.ArgumentParser()
     # Data
-    ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021_with_EWT.csv")
-    ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022_with_EWT.csv")
+    ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
+    ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
     ap.add_argument("--rrp-col",    type=str, default="RRP")
     ap.add_argument("--mode-col",   type=str, default="Mode_1",
                     help="Which IMF column to train this model on (e.g. Mode_1, ..., Residual)")
