@@ -41,6 +41,7 @@ class NVMD_MRC_BiLSTM(nn.Module):
             lstm_layers=lstm_layers,
             bidirectional=bidirectional,
         )
+        self.rrp_head = nn.Linear(lstm_hidden * (2 if bidirectional else 1), 1)
 
     def _decompose_norm(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -57,9 +58,10 @@ class NVMD_MRC_BiLSTM(nn.Module):
 
 
         imf_pred_norm = self._decompose_norm(x)        # (B,1,L)
-        y_mode_norm = self.predictor(imf_pred_norm)    # (B,1)
+        y_mode_norm, last_h = self.predictor(imf_pred_norm)    # (B,1)
 
-        return imf_pred_norm, y_mode_norm
+        rrp_hat = self.rrp_head(last_h)  # (B,1)
+        return imf_pred_norm, y_mode_norm, rrp_hat
 
     @torch.no_grad()
     def decompose(self, x: torch.Tensor):
