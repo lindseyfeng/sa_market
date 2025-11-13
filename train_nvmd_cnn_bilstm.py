@@ -256,7 +256,7 @@ def main():
         df=df_tr,
         decomp_cols=decomp_cols,
         seq_len=args.seq_len,
-        target_col="RRP",
+        rrp_col="RRP",
     )
     sc = trds.scalers()  # contains imf_mins, imf_maxs
 
@@ -264,7 +264,7 @@ def main():
         df=df_va,
         decomp_cols=decomp_cols,
         seq_len=args.seq_len,
-        target_col="RRP",
+        rrp_col="RRP",
         imf_mins=sc["imf_mins"],
         imf_maxs=sc["imf_maxs"],
     )
