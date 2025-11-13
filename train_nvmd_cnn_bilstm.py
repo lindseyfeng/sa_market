@@ -166,8 +166,6 @@ def train_or_eval_epoch(
     
         loss_imf = F.mse_loss(imfs_pred_norm, imf_in_norm)
         
-      
-
     
         
         y_pred_modes_raw = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)  # (B,K)
@@ -198,8 +196,8 @@ def train_or_eval_epoch(
         bs = x_raw.size(0)
         total    += bs
         sum_loss += loss.item()        * bs
-        sum_dec  += loss_decomp.item() * bs
-        sum_pred += loss_pred.item()   * bs
+        sum_dec  += loss_imf_next.item() * bs
+        sum_pred += loss_rrp.item()   * bs
 
     return (
         sum_loss / max(total, 1),
