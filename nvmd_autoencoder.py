@@ -33,16 +33,9 @@ class ResCausal(nn.Module):
 
 
 class MultiModeNVMD(nn.Module):
-    """
-    Encoder–decoder with K per-mode heads.
-    Input : (B,1,L)  RRP window
-    Output: imfs  (B,K,L)  reconstructed IMFs
-            recon (B,1,L)  sum over IMFs (approx RRP)
-    """
     def __init__(self, K=13, base=64):
         super().__init__()
         self.K = K
-        # Encoder
         self.enc1 = ResCausal(1, base)
         self.enc2 = ResCausal(base, base*2, s=2)
         self.enc3 = ResCausal(base*2, base*4, k=5, s=2)
