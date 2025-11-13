@@ -149,7 +149,7 @@ def train_or_eval_epoch_joint(
         loss_recon = F.l1_loss(imf_pred, imf_win)
         loss_pred = F.l1_loss(y_mode_pred, imf_next)
 
-        loss = alpha * loss_recon + beta * loss_pred
+        loss =  loss_pred
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
