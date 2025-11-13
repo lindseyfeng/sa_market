@@ -129,14 +129,14 @@ def train_or_eval_epoch_raw(
         imfs_pred = model(x_win)   # (B, K, L)
 
         # ---------- per-mode reconstruction loss ----------
-        # elementwise Huber: (B, K, L)
-        per_elem = huber(imfs_pred, y_win)
+        per_mode_losses = []
+        for k in range(y_win.shape[1]):   # K
+            mode_loss = huber(imfs_pred[:, k], y_win[:, k]).mean()   # mean over B,L
+            per_mode_losses.append(mode_loss)
+        
+        per_mode_losses = torch.stack(per_mode_losses)   # (K,)
+        loss_recon = per_mode_losses.mean()
 
-        # average over batch & time → (K,) per-mode losses
-        per_mode_losses = per_elem.mean(dim=(0, 2))  # (K,)
-
-        # sum them together (if you prefer average, use .mean() instead)
-        loss_recon = per_mode_losses.sum()
 
         # ---------- sum-consistency loss ----------
         sum_pred = imfs_pred.sum(dim=1)  # (B, L)
