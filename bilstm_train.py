@@ -253,8 +253,8 @@ def eval_predictor_only_metrics(model, loader, device, imf_mins, imf_maxs):
 def main():
     ap = argparse.ArgumentParser()
     # Data
-    ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021_with_EWT.csv")
-    ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022_with_EWT.csv")
+    ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
+    ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
     ap.add_argument("--seq-len", type=int, default=9)
 
     # Model
