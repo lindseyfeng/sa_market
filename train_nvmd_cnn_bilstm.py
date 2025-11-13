@@ -195,7 +195,7 @@ def train_or_eval_epoch(
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
 
-        bs = xb.size(0)
+        bs = x_raw.size(0)
         total    += bs
         sum_loss += loss.item()        * bs
         sum_dec  += loss_decomp.item() * bs
