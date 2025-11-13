@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+# train_nvmd_autoencoder_raw.py
+#
+# Step 1 (per-mode): Train ONLY the decomposer (NVMD_Autoencoder) for a single mode.
+# - Inputs:  x = raw RRP window (default) or sum of raw IMFs (if you want)
+# - Targets: y = raw IMF window for ONE mode, shape (1, L)
+# - Loss: Huber reconstruction in RAW scale (no normalization, no sigmoid inside model)
+#
+# You run this script separately for Mode_1, Mode_2, ..., Residual by changing --mode-col
+# and (optionally) --outdir.
+
 import argparse, os, json
 import numpy as np
 import pandas as pd
@@ -7,11 +17,11 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
-from nvmd_cnn_bilstm import NVMD_MRC_BiLSTM  # your joint model: decomposer + predictors
+from nvmd_autoencoder import NVMD_Autoencoder
 
 
 # -------------------------
-# Utils
+# Repro
 # -------------------------
 def set_seed(seed: int = 1337):
     import random
@@ -21,170 +31,115 @@ def set_seed(seed: int = 1337):
     torch.cuda.manual_seed_all(seed)
 
 
-class MinMaxScalerND:
+# -------------------------
+# Dataset (per-mode, RAW)
+# -------------------------
+class DecompOnlyDatasetRawSingleMode(Dataset):
     """
-    Per-channel min-max scaler for arbitrary ND tensors.
-    We'll use it to denorm per-mode scalar predictions back to raw IMF scale.
+    Train the decomposer on RAW IMF for a single mode (no normalization).
+
+    For each window i..i+L-1:
+      - x: (1, L) raw RRP window (or sum of all IMFs if x_mode='sum')
+      - y: (1, L) raw IMF window for the selected mode
     """
-    def __init__(self, mins: torch.Tensor, maxs: torch.Tensor, channel_axis: int = 1, eps: float = 1e-12):
-        assert mins.numel() == maxs.numel()
-        self.mins = mins
-        self.maxs = maxs
-        self.axis = channel_axis
-        self.eps  = eps
-
-    def _view_shape(self, x: torch.Tensor):
-        shape = [1] * x.ndim
-        shape[self.axis] = self.mins.numel()
-        return shape
-
-    def norm(self, x: torch.Tensor) -> torch.Tensor:
-        mins = self.mins.view(*self._view_shape(x))
-        rng  = (self.maxs - self.mins).view(*self._view_shape(x)).clamp_min(self.eps)
-        return (x - mins) / rng
-
-    def denorm(self, x: torch.Tensor) -> torch.Tensor:
-        mins = self.mins.view(*self._view_shape(x))
-        rng  = (self.maxs - self.mins).view(*self._view_shape(x)).clamp_min(self.eps)
-        return x * rng + mins
-
-
-class Decomp13Dataset(Dataset):
-
     def __init__(
         self,
         df: pd.DataFrame,
-        decomp_cols: list[str],         # IMF columns (e.g. Mode_1..Mode_12, Residual)
-        seq_len: int = 9,
-        rrp_col: str = "RRP",
-        imf_mins: np.ndarray | None = None,
-        imf_maxs: np.ndarray | None = None,
+        mode_col: str,          # e.g. "Mode_1" or "Residual"
+        target_col: str = "RRP",
+        seq_len: int = 1024,
+        x_mode: str = "raw",    # "raw" (RRP window) or "sum" (sum of all IMFs)
+        all_decomp_cols: list[str] | None = None,  # needed only if x_mode == "sum"
     ):
-        self.decomp_cols = decomp_cols
-        self.K = len(decomp_cols)
+        super().__init__()
+        self.mode_col = mode_col
         self.L = seq_len
+        self.x_mode = x_mode
 
-        # ----- raw IMFs: (T, K) -> (K, T)
-        imfs_np = df[decomp_cols].to_numpy(dtype=np.float32)   # (T, K)
-        self.imfs_raw = torch.tensor(imfs_np).transpose(0, 1)  # (K, T)
+        # Target IMF (single mode)
+        if mode_col not in df.columns:
+            raise ValueError(f"mode_col '{mode_col}' not in dataframe columns.")
+        imf_np = df[mode_col].to_numpy(dtype=np.float32)     # (T,)
+        self.imf = torch.from_numpy(imf_np).contiguous()     # (T,)
 
-        # raw RRP series (for x windows only)
-        rrp_np = df[rrp_col].to_numpy(dtype=np.float32)
-        self.rrp_raw = torch.tensor(rrp_np, dtype=torch.float32)  # (T,)
-        T = len(self.rrp_raw)
+        # RRP series
+        if target_col not in df.columns:
+            raise ValueError(f"target_col '{target_col}' not in dataframe columns.")
+        rrp_np = df[target_col].to_numpy(dtype=np.float32)   # (T,)
+        self.rrp = torch.from_numpy(rrp_np).contiguous()     # (T,)
+        T = self.rrp.shape[0]
 
-        # per-IMF min/max for normalization (global over the dataset or given from train)
-        if imf_mins is None or imf_maxs is None:
-            imf_mins = self.imfs_raw.min(dim=1).values.numpy()   # (K,)
-            imf_maxs = self.imfs_raw.max(dim=1).values.numpy()   # (K,)
-        self.imf_mins = np.asarray(imf_mins, dtype=np.float32)
-        self.imf_maxs = np.asarray(imf_maxs, dtype=np.float32)
+        if self.x_mode == "raw":
+            self.x_series = self.rrp                    # (T,)
+        elif self.x_mode == "sum":
+            if all_decomp_cols is None:
+                raise ValueError("all_decomp_cols must be provided when x_mode='sum'")
+            imfs_np_all = df[all_decomp_cols].to_numpy(dtype=np.float32)  # (T, K_all)
+            imfs_all = torch.from_numpy(imfs_np_all).transpose(0, 1).contiguous()  # (K_all, T)
+            self.x_series = imfs_all.sum(dim=0)        # (T,)
+        else:
+            raise ValueError("x_mode must be 'raw' or 'sum'")
 
-        mins = torch.tensor(self.imf_mins).unsqueeze(1)  # (K, 1)
-        rngs = (torch.tensor(self.imf_maxs) - torch.tensor(self.imf_mins)).unsqueeze(1) + 1e-12
-        self.imfs_norm = (self.imfs_raw - mins) / rngs   # (K, T) in [0, 1] ideally
-
-        # number of usable windows (need L points for history + 1 for target)
-        self.N = T - self.L - 1
-        if self.N < 0:
-            self.N = 0
+        # number of sliding windows (inclusive end)
+        self.N = max(0, T - self.L + 1)
 
     def __len__(self):
         return self.N
 
     def __getitem__(self, i: int):
-        """
-        i corresponds to window [i, ..., i+L-1] and target at time i+L.
-        """
         L = self.L
+        # x: (1, L) raw input window
+        x = self.x_series[i:i+L].unsqueeze(0)   # (1, L)
+        # y: (1, L) raw IMF window for this mode
+        y = self.imf[i:i+L].unsqueeze(0)        # (1, L)
+        return x, y
 
-        # x_raw: raw RRP window, shape (1, L)
-        x_raw = self.rrp_raw[i : i + L].unsqueeze(0)            # (1, L)
 
-        # imf_in_norm: normalized IMF window, shape (K, L)
-        imf_in_norm = self.imfs_norm[:, i : i + L]              # (K, L)
-
-        # imf_target_norm: normalized IMFs at time t+L, shape (K,)
-        imf_target_norm = self.imfs_norm[:, i + L]              # (K,)
-
-        return x_raw, imf_in_norm, imf_target_norm
-
-    def scalers(self):
-        """
-        For denorm inside training:
-           imf_raw = imf_norm * (max - min) + min
-        """
-        return dict(
-            imf_mins=self.imf_mins,
-            imf_maxs=self.imf_maxs,
-        )
-
+# -------------------------
+# Utils
+# -------------------------
 def build_default_13(df: pd.DataFrame) -> list[str]:
     cols = [f"Mode_{i}" for i in range(1, 13)] + ["Residual"]
-    for c in cols:
-        if c not in df.columns:
-            raise ValueError(f"Missing column '{c}' in dataframe.")
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns: {missing}")
     return cols
 
 
 # -------------------------
-# Joint train/eval (MSE only)
+# Train/Eval Epochs (RAW, per-mode)
 # -------------------------
-def train_or_eval_epoch(
-    model,
-    loader,
-    device,
-    alpha,          # weight for IMF reconstruction MSE
-    beta,           # weight for final prediction MSE
-    imf_mins,
-    imf_maxs,
+def train_or_eval_epoch_raw_single_mode(
+    model: nn.Module,
+    loader: DataLoader,
+    device: str,
     optimizer=None,
-    clip_grad=None,
+    clip_grad: float | None = None,
 ):
     """
-    Joint training:
+    RAW-scale training/eval for a single mode.
 
-      - Total: alpha * IMF_MSE + beta * Pred_MSE
+    loss_recon = mean HuberLoss over (B,1,L) in RAW scale.
+    No cross-mode sum-consistency term here because K=1.
     """
     is_train = optimizer is not None
     model.train(is_train)
 
-    total, sum_loss, sum_dec, sum_pred = 0, 0.0, 0.0, 0.0
+    huber = nn.HuberLoss(delta=10.0, reduction="mean")
 
-    imf_scaler = MinMaxScalerND(
-        mins=torch.tensor(imf_mins, dtype=torch.float32, device=device),
-        maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),
-        channel_axis=1
-    )
-    
-    for x_raw, imf_in_norm, imf_target_norm in loader:
-        x_raw = x_raw.to(device)                  # (B,1,L)
-        imf_in_norm = imf_in_norm.to(device)      # (B,K,L)
-        imf_target_norm = imf_target_norm.to(device)  # (B,K)
-    
-        imfs_pred_norm, y_modes_norm_pred = model(x_raw)  # (B,K,L), (B,K)
-    
-        loss_imf = F.mse_loss(imfs_pred_norm, imf_in_norm)
-        
-    
-        
-        y_pred_modes_raw = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)  # (B,K)
-        y_target_modes_raw = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
-    
-        y_pred_rrp = y_pred_modes_raw.sum(dim=1, keepdim=True)    # (B,1)
-        y_true_rrp = y_target_modes_raw.sum(dim=1, keepdim=True)  # (B,1)
+    tot, log_total = 0, 0.0
 
-        y_modes_raw_pred    = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)
-        imf_target_raw      = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)
-        loss_imf_next = F.l1_loss(y_modes_raw_pred, imf_target_raw)
-    
-        loss_rrp = F.l1_loss(y_pred_rrp, y_true_rrp)
-    
-        # then combine however you want:
-        # total_loss = alpha * loss_imf + beta * loss_imf_next + gamma * loss_rrp
-    
+    for x_win, y_win in loader:
+        x_win = x_win.to(device)   # (B,1,L)
+        y_win = y_win.to(device)   # (B,1,L)
 
-        loss = beta*loss_rrp + alpha*loss_imf_next
+        # forward (raw output, no sigmoid here)
+        imf_pred = model(x_win)    # (B,1,L)
+
+        # reconstruction loss in RAW scale
+        loss_recon = huber(imf_pred, y_win)  # scalar
+
+        loss = loss_recon
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
@@ -193,187 +148,139 @@ def train_or_eval_epoch(
                 nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             optimizer.step()
 
-        bs = x_raw.size(0)
-        total    += bs
-        sum_loss += loss.item()        * bs
-        sum_dec  += loss_imf_next.item() * bs
-        sum_pred += loss_rrp.item()   * bs
+        bs = x_win.size(0)
+        tot       += bs
+        log_total += loss.item() * bs
 
-    return (
-        sum_loss / max(total, 1),
-        sum_dec  / max(total, 1),
-        sum_pred / max(total, 1),
-    )
+    return log_total / max(tot, 1)
 
 
 # -------------------------
-# Main: second-stage joint training
+# Main
 # -------------------------
 def main():
     ap = argparse.ArgumentParser()
     # Data
     ap.add_argument("--train-csv", default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--val-csv",   default="VMD_modes_with_residual_2021_2022.csv")
-    ap.add_argument("--seq-len", type=int, default=8)
+    ap.add_argument("--target-col", type=str, default="RRP")
+    ap.add_argument("--mode-col",   type=str, default="Mode_1",
+                    help="Which IMF column to train this decomposer on (e.g. Mode_1, ..., Residual)")
+    ap.add_argument("--seq-len", type=int, default=1024)
+    ap.add_argument("--x-mode", type=str, choices=["raw", "sum"], default="raw",
+                    help="Decomposer input: raw RRP window (default) or sum of raw IMFs")
 
     # Model
     ap.add_argument("--base", type=int, default=128)
-    ap.add_argument("--lstm-hidden", type=int, default=128)
-    ap.add_argument("--lstm-layers", type=int, default=3)
-    ap.add_argument("--bidirectional", action="store_true", default=True)
 
-    # Training
-    ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--batch", type=int, default=1024)
-    ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--alpha", type=float, default=1.0, help="weight for IMF MSE")
-    ap.add_argument("--beta",  type=float, default=1.0, help="weight for prediction MSE")
+    # Train
+    ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--clip-grad", type=float, default=None)
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--num-workers", type=int, default=0)
 
-    # Decomposer checkpoint (first-stage NVMD_Autoencoder)
-    ap.add_argument("--dec-ckpt", type=str,  default="./runs_nvmd_autoencoder_raw/best.pt",
-                    help="Path to pretrained NVMD_Autoencoder checkpoint (with 'model_state')")
-
-    # Logs / save
-    ap.add_argument("--outdir", type=str, default="./runs_nvmd_joint_mse")
+    # I/O
+    ap.add_argument("--outdir", type=str, default="./runs_nvmd_autoencoder_raw_mode")
+    ap.add_argument("--save-every", type=int, default=1)
     args = ap.parse_args()
 
     set_seed(args.seed)
     os.makedirs(args.outdir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load dataframes
+    # Load data
     df_tr = pd.read_csv(args.train_csv)
     df_va = pd.read_csv(args.val_csv)
 
-    # IMF columns
-    decomp_cols = build_default_13(df_tr)
+    # All decomp columns only needed if x_mode == "sum"
+    all_decomp_cols = None
+    if args.x_mode == "sum":
+        all_decomp_cols = build_default_13(df_tr)
 
-    # Datasets
-    trds = Decomp13Dataset(
+    # Datasets / Loaders (per-mode)
+    tr_ds = DecompOnlyDatasetRawSingleMode(
         df=df_tr,
-        decomp_cols=decomp_cols,
+        mode_col=args.mode_col,
+        target_col=args.target_col,
         seq_len=args.seq_len,
-        rrp_col="RRP",
+        x_mode=args.x_mode,
+        all_decomp_cols=all_decomp_cols,
     )
-    sc = trds.scalers()  # contains imf_mins, imf_maxs
-
-    vads = Decomp13Dataset(
+    va_ds = DecompOnlyDatasetRawSingleMode(
         df=df_va,
-        decomp_cols=decomp_cols,
+        mode_col=args.mode_col,
+        target_col=args.target_col,
         seq_len=args.seq_len,
-        rrp_col="RRP",
-        imf_mins=sc["imf_mins"],
-        imf_maxs=sc["imf_maxs"],
+        x_mode=args.x_mode,
+        all_decomp_cols=all_decomp_cols,
     )
 
-    # Loaders
     pin = (device == "cuda")
-    trdl = DataLoader(trds, batch_size=args.batch, shuffle=True,
-                      num_workers=args.num_workers, pin_memory=pin)
-    vadl = DataLoader(vads, batch_size=args.batch, shuffle=False,
-                      num_workers=args.num_workers, pin_memory=pin)
+    tr_dl = DataLoader(tr_ds, batch_size=args.batch, shuffle=True,
+                       num_workers=args.num_workers, pin_memory=pin, drop_last=True)
+    va_dl = DataLoader(va_ds, batch_size=args.batch, shuffle=False,
+                       num_workers=args.num_workers, pin_memory=pin)
 
-    # Joint model: decomposer + predictors
-    K = len(decomp_cols)
-    model = NVMD_MRC_BiLSTM(
-        signal_len=args.seq_len,  # this is the length your predictor expects
-        K=K,
+    # Model + Optim (per-mode: K=1)
+    model = NVMD_Autoencoder(
+        in_ch=1,
         base=args.base,
-        lstm_hidden=args.lstm_hidden,
-        lstm_layers=args.lstm_layers,
-        bidirectional=args.bidirectional,
-        freeze_decomposer=False,  # we WANT gradients through decomposer in this stage
+        K=1,                      # single mode
+        signal_len=args.seq_len,
     ).to(device)
 
-    # -------------------------
-    # Load pretrained decomposer
-    # -------------------------
-    print(f"Loading decomposer checkpoint from: {args.dec_ckpt}")
-    dec_ck = torch.load(args.dec_ckpt, map_location="cpu")
-
-    # assume it was saved as {"model_state": nvmd_state_dict, ...}
-    dec_state = dec_ck.get("model_state", dec_ck)
-
-    # handle potential "module." prefixes
-    cleaned_state = {}
-    for k, v in dec_state.items():
-        if k.startswith("module."):
-            cleaned_state[k[len("module."):]] = v
-        else:
-            cleaned_state[k] = v
-
-    missing, unexpected = model.decomposer.load_state_dict(cleaned_state, strict=False)
-    if missing:
-        print("Warning: missing keys in decomposer state_dict:", missing)
-    if unexpected:
-        print("Warning: unexpected keys in decomposer state_dict:", unexpected)
-
-    print("Decomposer weights loaded. Training jointly with predictors using MSE losses.")
-
-    # Optimizer: ALL params (decomposer + predictors)
-    opt = torch.optim.Adam(
-        (p for p in model.parameters() if p.requires_grad),
-        lr=args.lr,
-    )
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     best_val = float("inf")
     best_state = None
 
     for ep in range(1, args.epochs + 1):
-        tr_loss, tr_ld, tr_lp = train_or_eval_epoch(
-            model, trdl, device,
-            alpha=args.alpha, beta=args.beta,
-            imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
+        tr_loss = train_or_eval_epoch_raw_single_mode(
+            model, tr_dl, device,
             optimizer=opt,
             clip_grad=args.clip_grad,
         )
-
-        va_loss, va_ld, va_lp = train_or_eval_epoch(
-            model, vadl, device,
-            alpha=args.alpha, beta=args.beta,
-            imf_mins=sc["imf_mins"], imf_maxs=sc["imf_maxs"],
+        va_loss = train_or_eval_epoch_raw_single_mode(
+            model, va_dl, device,
             optimizer=None,
             clip_grad=None,
         )
 
-        print(
-            f"[Epoch {ep:02d}] "
-            f"train: total={tr_loss:.6f} decomp={tr_ld:.6f} pred={tr_lp:.6f} | "
-            f"val: total={va_loss:.6f} decomp={va_ld:.6f} pred={va_lp:.6f}"
-        )
+        print(f"[Epoch {ep:03d}] "
+              f"train: recon={tr_loss:.6f} | "
+              f"val: recon={va_loss:.6f}")
 
-        # track best by prediction loss (rmse proxy)
-        if va_lp < best_val:
-            best_val = va_lp
+        # Track best on validation loss
+        if va_loss < best_val:
+            best_val = va_loss
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
-        ck = {
-            "epoch": ep,
-            "val_best": best_val,
-            "model_state": model.state_dict(),
-            "args": vars(args),
-            "scalers": sc,
-            "decomp_cols": decomp_cols,
-        }
-        torch.save(ck, os.path.join(args.outdir, f"epoch_{ep:02d}.pt"))
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-        torch.save(
-            {
-                "epoch": "best",
+        # periodic checkpoint
+        if (args.save_every > 0) and (ep % args.save_every == 0):
+            ck = {
+                "epoch": ep,
                 "val_best": best_val,
-                "model_state": best_state,
+                "model_state": model.state_dict(),
                 "args": vars(args),
-                "scalers": sc,
-                "decomp_cols": decomp_cols,
-            },
-            os.path.join(args.outdir, "best.pt"),
-        )
-        print(f"Saved best joint MSE checkpoint with val_pred_MSE={best_val:.6f}")
+                "mode_col": args.mode_col,
+                "notes": "RAW per-mode training for NVMD_Autoencoder",
+            }
+            torch.save(ck, os.path.join(args.outdir, f"{args.mode_col}_epoch_{ep:03d}.pt"))
+
+    # Save best
+    if best_state is not None:
+        out_best = os.path.join(args.outdir, f"{args.mode_col}_best.pt")
+        torch.save({
+            "epoch": "best",
+            "val_best": best_val,
+            "model_state": best_state,
+            "args": vars(args),
+            "mode_col": args.mode_col,
+            "notes": "RAW per-mode training for NVMD_Autoencoder",
+        }, out_best)
+        print(f"Saved best checkpoint for {args.mode_col} → {out_best}")
     else:
         print("No best state captured; nothing saved.")
 
