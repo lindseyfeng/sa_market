@@ -234,7 +234,7 @@ def main():
     ap.add_argument("--num-workers", type=int, default=0)
 
     # Decomposer checkpoint (first-stage NVMD_Autoencoder)
-    ap.add_argument("--dec-ckpt", type=str, required=True, default="./runs_nvmd_autoencoder_raw/best.pt",
+    ap.add_argument("--dec-ckpt", type=str,  default="./runs_nvmd_autoencoder_raw/best.pt",
                     help="Path to pretrained NVMD_Autoencoder checkpoint (with 'model_state')")
 
     # Logs / save
