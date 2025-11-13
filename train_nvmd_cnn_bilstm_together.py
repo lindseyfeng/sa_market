@@ -94,6 +94,7 @@ class NVMDModeDataset(Dataset):
         L = self.L
         # Input window: RRP or sum of IMFs, times [i, ..., i+L-1]
         x_raw = self.x_series[i:i+L].unsqueeze(0)       # (1,L)
+        y_raw = self.x_series[i+L].unsqueeze(0)       # (1,L)
 
         # Reconstruction window: IMF for this mode, times [i, ..., i+L-1]
         imf_win = self.imf[i:i+L].unsqueeze(0)          # (1,L)
@@ -101,7 +102,7 @@ class NVMDModeDataset(Dataset):
         # Next-step target: IMF(t+L)
         imf_next = self.imf[i+L].unsqueeze(0)           # (1,)
 
-        return x_raw, imf_win, imf_next
+        return x_raw, imf_win, imf_next, y_raw
 
 
 # -------------------------
@@ -140,14 +141,14 @@ def train_or_eval_epoch_joint(
     total_pred_sum = 0.0
     n_samples = 0
 
-    for x_raw, imf_win, imf_next in loader:
+    for x_raw, imf_win, imf_next, y_true in loader:
         x_raw   = x_raw.to(device)      # (B,1,L)
         imf_win = imf_win.to(device)    # (B,1,L)
         imf_next = imf_next.to(device)  # (B,1)
 
-        imf_pred, y_mode_pred = model(x_raw)    # (B,1,L), (B,1)
-        loss_recon = F.l1_loss(imf_pred, imf_win)
-        loss_pred = F.l1_loss(y_mode_pred, imf_next)
+        imf_pred, y_mode_pred, y_pred = model(x_raw)    # (B,1,L), (B,1)
+        loss_pred = F.l1_loss(y_true, y_pred)
+        loss_recon = F.l1_loss(y_mode_pred, imf_next)
 
         loss =  loss_pred+loss_recon
 
