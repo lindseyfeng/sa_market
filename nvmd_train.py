@@ -175,7 +175,7 @@ def train_or_eval_epoch(model, loader, device, alpha, beta,
     return (sum_loss / max(total, 1),
             sum_d    / max(total, 1),
             sum_p    / max(total, 1))
-        loss = loss_recon + sum_reg * loss_sum
+  
 
 
 # -------------------------
