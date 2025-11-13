@@ -174,7 +174,7 @@ def train_or_eval_epoch(
                 y_modes_norm = y_modes_norm.squeeze(1)
 
         # # IMF MSE in normalized space
-        # loss_decomp = F.mse_loss(imfs_pred_norm, imfs_true_norm)
+        loss_decomp = F.mse_loss(imfs_pred_norm, imfs_true_norm)
 
         # denorm per-mode scalar predictions to raw IMF scale
         y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
