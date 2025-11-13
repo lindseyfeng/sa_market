@@ -18,6 +18,8 @@ class NVMD_MRC_BiLSTM(nn.Module):
         lstm_layers: int = 3,
         bidirectional: bool = True,
         freeze_decomposer: bool = False,
+        d_mode_embed: int = 128
+        
     ):
         super().__init__()
         self.signal_len = signal_len
@@ -89,7 +91,8 @@ if __name__ == "__main__":
         lstm_hidden=128,
         lstm_layers=3,
         bidirectional=True,
-        freeze_decomposer=False
+        freeze_decomposer=False,
+        
     )
 
     x = torch.randn(B, 1, L)
