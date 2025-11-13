@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
-
+from nvmd_autoencoder import MultiModeNVMD
 
 
 def set_seed(seed: int = 1337):
