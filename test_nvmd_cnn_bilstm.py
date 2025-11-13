@@ -260,7 +260,7 @@ def main():
         rrp_col=args.target_col,
         imf_mins=imf_mins,
         imf_maxs=imf_maxs,
-        x_mode=args.x_mode
+   
     )
     sc = ds.scalers()
     pin = (device == "cuda")
