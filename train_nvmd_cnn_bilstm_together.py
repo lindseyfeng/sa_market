@@ -189,12 +189,12 @@ def main():
     ap.add_argument("--rrp-col",    type=str, default="RRP")
     ap.add_argument("--mode-col",   type=str, default="Mode_1",
                     help="Which IMF column to train this model on (e.g. Mode_1, ..., Residual)")
-    ap.add_argument("--seq-len", type=int, default=64)
+    ap.add_argument("--seq-len", type=int, default=32)
     ap.add_argument("--x-mode", type=str, choices=["raw", "sum"], default="raw",
                     help="Model input: raw RRP window (default) or sum of raw IMFs")
 
     # Model
-    ap.add_argument("--base", type=int, default=256)
+    ap.add_argument("--base", type=int, default=64)
     ap.add_argument("--lstm-hidden", type=int, default=256)
     ap.add_argument("--lstm-layers", type=int, default=3)
     ap.add_argument("--bidirectional", action="store_true", default=True)
@@ -203,7 +203,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--alpha", type=float, default=0.2, help="weight for IMF reconstruction loss")
+    ap.add_argument("--alpha", type=float, default=1.0, help="weight for IMF reconstruction loss")
     ap.add_argument("--beta",  type=float, default=1.0, help="weight for next-step prediction loss")
     ap.add_argument("--clip-grad", type=float, default=None)
     ap.add_argument("--seed", type=int, default=42)
