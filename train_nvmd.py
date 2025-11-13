@@ -178,7 +178,7 @@ def train_epoch(model, loader, opt, device, w1, w2, w3):
     return total / len(loader.dataset)
 
 
-def eval_epoch(model, loader, device, df_imf_cols):
+def eval_epoch(model, loader, device):
     model.eval()
     total_rrp = 0
     total_imf_window = 0
