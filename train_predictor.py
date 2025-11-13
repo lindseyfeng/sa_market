@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
-from nvmd_price_model import NVMDMultiModePriceModel  # adjust path if needed
+from nvmd_cnn_bilstm import NVMDMultiModePriceModel  
 
 
 # ==========================================================
