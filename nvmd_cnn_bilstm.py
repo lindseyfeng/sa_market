@@ -56,6 +56,8 @@ class NVMD_MRC_BiLSTM(nn.Module):
         mode_emb_flat = mode_emb.reshape(B * self.K, self.d_mode_embed)    # (B*K,d)
         mode_emb_flat = mode_emb_flat.unsqueeze(-1).expand(-1, -1, L)  # (B*K,d,L)
 
+        imfs_flat = imfs_pred_norm.reshape(B * K, 1, L) 
+
         predictor_in = torch.cat([imfs_flat, mode_emb_flat], dim=1)
 
         y_flat = self.predictor(predictor_in)  # (B*K,1)
