@@ -140,7 +140,7 @@ class NVMDTransformerRRPModel(nn.Module):
             self.decomposer.eval()
 
     def forward(self, x_raw: torch.Tensor) -> torch.Tensor:
-        imfs = self.decomposer(x_raw)          # (B,K,L)
+        imfs, sum = self.decomposer(x_raw)          # (B,K,L)
         rrp_next_hat = self.predictor(imfs)    # (B,1)
         return rrp_next_hat
 
