@@ -119,49 +119,95 @@ def build_default_13(df: pd.DataFrame) -> list[str]:
     return cols
 
 @torch.no_grad()
-def eval_epoch(model, loader, device, imf_mins, imf_maxs, crop:int=0, return_series:bool=False):
+def eval_epoch(
+    model,
+    loader,
+    device,
+    imf_mins,
+    imf_maxs,
+    crop: int = 0,
+    return_series: bool = False,
+):
+    """
+    Eval to match training's prediction target:
+
+      y_pred_rrp = sum_k IMF_k_raw_pred(t+L)
+      y_true_rrp = sum_k IMF_k_raw_true(t+L)
+
+    Metrics:
+      - mae, rmse over y_pred_rrp vs y_true_rrp
+      - recon_mae over sum_k IMF_k_raw(t) time series (optional)
+    """
     model.eval()
 
-    mins = torch.tensor(imf_mins, dtype=torch.float32, device=device).view(1, -1)  # (1,K)
-    rng  = (torch.tensor(imf_maxs, dtype=torch.float32, device=device) -
-            torch.tensor(imf_mins, dtype=torch.float32, device=device)).clamp_min(1e-12).view(1, -1)  # (1,K)
-    mins_L = mins.view(1, -1, 1)  # (1,K,1)
-    rng_L  = rng.view(1, -1, 1)   # (1,K,1)
+    # scaler for IMFs (same as in training)
+    imf_scaler = MinMaxScalerND(
+        mins=torch.tensor(imf_mins, dtype=torch.float32, device=device),
+        maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),
+        channel_axis=1,  # (B,K,L)
+    )
 
     y_true_all, y_pred_all = [], []
     recon_mae_accum, n_batches = 0.0, 0
+
     for x_raw, imf_in_norm, imf_target_norm in loader:
-        x_raw = x_raw.to(device)                  # (B,1,L)
-        imf_in_norm = imf_in_norm.to(device)      # (B,K,L)
+        x_raw          = x_raw.to(device)          # (B,1,L)
+        imf_in_norm    = imf_in_norm.to(device)    # (B,K,L)
         imf_target_norm = imf_target_norm.to(device)  # (B,K)
-    
+
+        # Forward pass
         imfs_pred_norm, y_modes_norm_pred = model(x_raw)  # (B,K,L), (B,K)
-    
-        loss_imf = F.mse_loss(imfs_pred_norm, imf_in_norm)
-    
-        
-        y_pred_modes_raw = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)  # (B,K)
-        y_target_modes_raw = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
-    
-        y_pred_rrp = y_pred_modes_raw.sum(dim=1, keepdim=True)    # (B,1)
-        y_true_rrp = y_target_modes_raw.sum(dim=1, keepdim=True)  # (B,1)
 
-        y_modes_raw_pred    = imf_scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)
-        imf_target_raw      = imf_scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)
-        loss_imf_next = F.mse_loss(y_modes_raw_pred, imf_target_raw)
-    
-        loss_rrp = F.l1_loss(y_pred_rrp, y_true_rrp)
-    
-        # then combine however you want:
-        # total_loss = alpha * loss_imf + beta * loss_imf_next + gamma * loss_rrp
-    
+        # ---- Next-step RRP from IMFs (same as training) ----
+        # denorm mode scalars
+        y_modes_raw_pred = imf_scaler.denorm(
+            y_modes_norm_pred.unsqueeze(-1)
+        ).squeeze(-1)                                # (B,K)
+        imf_target_raw   = imf_scaler.denorm(
+            imf_target_norm.unsqueeze(-1)
+        ).squeeze(-1)                                # (B,K)
 
-        loss = beta*loss_rrp + alpha*loss_imf_next
+        y_pred_rrp = y_modes_raw_pred.sum(dim=1, keepdim=True)  # (B,1)
+        y_true_rrp = imf_target_raw.sum(dim=1, keepdim=True)    # (B,1)
 
-    mae  = torch.mean(torch.abs(y_pred_rrp - y_true_rrp)).item()
-    rmse = torch.sqrt(torch.mean((y_pred_rrp - y_true_rrp) ** 2)).item()
+        y_true_all.append(y_true_rrp)
+        y_pred_all.append(y_pred_rrp)
 
-        return mae, rmse, 
+        # ---- Optional reconstruction metric (time series) ----
+        if crop > 0:
+            imfs_pred_crop = imfs_pred_norm[:, :, crop:-crop]
+            imfs_true_crop = imf_in_norm[:, :, crop:-crop]
+        else:
+            imfs_pred_crop = imfs_pred_norm
+            imfs_true_crop = imf_in_norm
+
+        imfs_pred_raw = imf_scaler.denorm(imfs_pred_crop)  # (B,K,L')
+        imfs_true_raw = imf_scaler.denorm(imfs_true_crop)  # (B,K,L')
+
+        sig_pred = imfs_pred_raw.sum(dim=1)  # (B,L')
+        sig_true = imfs_true_raw.sum(dim=1)  # (B,L')
+
+        recon_mae_batch = torch.mean(torch.abs(sig_pred - sig_true)).item()
+        recon_mae_accum += recon_mae_batch
+        n_batches += 1
+
+    # ---- aggregate over all batches ----
+    y_true_all = torch.cat(y_true_all, dim=0).view(-1)
+    y_pred_all = torch.cat(y_pred_all, dim=0).view(-1)
+
+    mae  = torch.mean(torch.abs(y_pred_all - y_true_all)).item()
+    rmse = torch.sqrt(torch.mean((y_pred_all - y_true_all) ** 2)).item()
+    recon_mae = recon_mae_accum / max(n_batches, 1)
+
+    if return_series:
+        return (
+            mae,
+            rmse,
+            recon_mae,
+            y_true_all.cpu().numpy(),
+            y_pred_all.cpu().numpy(),
+        )
+    return mae, rmse, recon_mae
 
 def main():
     ap = argparse.ArgumentParser()
