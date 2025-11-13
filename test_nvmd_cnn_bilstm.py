@@ -169,7 +169,7 @@ def main():
     # Data
     ap.add_argument("--csv",  default="VMD_modes_with_residual_2021_2022.csv",
                     help="CSV with Mode_1..Mode_12, Residual, RRP")
-    ap.add_argument("--seq-len", type=int, default=128)
+    ap.add_argument("--seq-len", type=int, default=8)
     ap.add_argument("--target-col", type=str, default="RRP")
     ap.add_argument("--x-mode", type=str, choices=["raw","sum_norm"], default="raw",
                     help="Use raw RRP window (train default) or sum of normalized IMFs")
