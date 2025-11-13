@@ -105,31 +105,45 @@ def train_or_eval_epoch_raw(
     device: str,
     optimizer=None,
     clip_grad: float | None = None,
-    sum_reg: float = 0.2
+    sum_reg: float = 0.2,
 ):
     """
     RAW-scale training/eval.
-    loss = Huber(imfs_pred, imfs_true) + sum_reg * L1(sum(imfs_pred), sum(imfs_true))
+    loss_recon = sum_k Huber_k, where each Huber_k is the mean Huber over (B,L) for mode k.
+    loss_sum   = L1(sum(imfs_pred), sum(imfs_true))
+    loss       = loss_recon + sum_reg * loss_sum
     """
     is_train = optimizer is not None
     model.train(is_train)
 
-    loss_fn_imf = nn.HuberLoss(delta=10.0, reduction="mean")
+    # we want per-mode, so use reduction='none'
+    huber = nn.HuberLoss(delta=10.0, reduction="none")
 
     tot, log_total, log_recon, log_sum = 0, 0.0, 0.0, 0.0
 
     for x_win, y_win in loader:
-        x_win = x_win.to(device)            # (B, 1, L)
-   
-        y_win = y_win.to(device)            # (B, K, L)
-    
+        x_win = x_win.to(device)   # (B, 1, L)
+        y_win = y_win.to(device)   # (B, K, L)
 
         # forward (raw output, no sigmoid)
-        imfs_pred = model(x_win)            # (B, K, L) raw
+        imfs_pred = model(x_win)   # (B, K, L)
 
-        # losses on RAW scale
-        loss_recon = loss_fn_imf(imfs_pred, y_win)
-        loss_sum   = F.l1_loss(imfs_pred.sum(dim=1), y_win.sum(dim=1))
+        # ---------- per-mode reconstruction loss ----------
+        # elementwise Huber: (B, K, L)
+        per_elem = huber(imfs_pred, y_win)
+
+        # average over batch & time → (K,) per-mode losses
+        per_mode_losses = per_elem.mean(dim=(0, 2))  # (K,)
+
+        # sum them together (if you prefer average, use .mean() instead)
+        loss_recon = per_mode_losses.sum()
+
+        # ---------- sum-consistency loss ----------
+        sum_pred = imfs_pred.sum(dim=1)  # (B, L)
+        sum_true = y_win.sum(dim=1)      # (B, L)
+        loss_sum = F.l1_loss(sum_pred, sum_true)
+
+        # total loss
         loss = loss_recon + sum_reg * loss_sum
 
         if is_train:
@@ -150,6 +164,7 @@ def train_or_eval_epoch_raw(
         log_recon / max(tot, 1),
         log_sum   / max(tot, 1),
     )
+
 
 
 # -------------------------
