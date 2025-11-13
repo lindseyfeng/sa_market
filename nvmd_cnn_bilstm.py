@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from nvmd_autoencoder import NVMD_Autoencoder
-from train.baseline.cnn_bilstm import MRC_BiLSTM
+from MRC_BiLSTM import MRC_BiLSTM
 
 
 class NVMD_MRC_BiLSTM(nn.Module):
