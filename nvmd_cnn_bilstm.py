@@ -91,14 +91,7 @@ class MultiModeNVMD_MRC_BiLSTM(nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        """
-        x: (B,1,L)
 
-        returns:
-            imfs_pred_norm_all: (B,K,L)
-            y_modes_norm:       (B,K)
-            y_price:            (B,1)
-        """
         B, C, L = x.shape
         assert C == 1, f"Expected x with 1 channel, got {C}"
         assert L == self.signal_len, f"Expected seq_len={self.signal_len}, got {L}"
@@ -107,7 +100,7 @@ class MultiModeNVMD_MRC_BiLSTM(nn.Module):
         y_list = []
 
         for m in self.models:
-            imf_i_norm, y_i_norm = m(x)   # (B,1,L), (B,1)
+            imf_i_norm, y_i_norm, _ = m(x)   # (B,1,L), (B,1)
             imfs_list.append(imf_i_norm)
             y_list.append(y_i_norm)
 
