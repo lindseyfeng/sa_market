@@ -49,24 +49,14 @@ class MinMaxScalerND:
         return x * rng + mins
 
 
-# -------------------------
-# Dataset: IMFs + RRP
-# -------------------------
 class Decomp13Dataset(Dataset):
-    """
-    Inputs:
-      - x: dummy (1, L) – NVMD_MRC_BiLSTM will ignore if you don't use it,
-           but we keep it to match the (x, imfs, y) interface you already have.
-      - imf_win_norm: (K, L) per-sample, normalized per-IMF using global min/max
-      - y: raw RRP(t+L), shape (1,)
-    """
 
     def __init__(
         self,
         df: pd.DataFrame,
-        decomp_cols: list[str],
+        decomp_cols: list[str],         # IMF columns (e.g. Mode_1..Mode_12, Residual)
         seq_len: int = 9,
-        target_col: str = "RRP",
+        rrp_col: str = "RRP",
         imf_mins: np.ndarray | None = None,
         imf_maxs: np.ndarray | None = None,
     ):
@@ -74,27 +64,27 @@ class Decomp13Dataset(Dataset):
         self.K = len(decomp_cols)
         self.L = seq_len
 
-        # raw IMFs: (T,K) -> (K,T)
-        imfs_np = df[decomp_cols].to_numpy(dtype=np.float32)
-        self.imfs = torch.tensor(imfs_np).transpose(0, 1)   # (K,T)
+        # ----- raw IMFs: (T, K) -> (K, T)
+        imfs_np = df[decomp_cols].to_numpy(dtype=np.float32)   # (T, K)
+        self.imfs_raw = torch.tensor(imfs_np).transpose(0, 1)  # (K, T)
 
-        # raw RRP series
-        rrp_np = df[target_col].to_numpy(dtype=np.float32)
-        self.rrp = torch.tensor(rrp_np, dtype=torch.float32)  # (T,)
-        T = len(self.rrp)
+        # raw RRP series (for x windows only)
+        rrp_np = df[rrp_col].to_numpy(dtype=np.float32)
+        self.rrp_raw = torch.tensor(rrp_np, dtype=torch.float32)  # (T,)
+        T = len(self.rrp_raw)
 
-        # per-IMF min/max
+        # per-IMF min/max for normalization (global over the dataset or given from train)
         if imf_mins is None or imf_maxs is None:
-            imf_mins = self.imfs.min(dim=1).values.numpy()
-            imf_maxs = self.imfs.max(dim=1).values.numpy()
-        self.imf_mins = np.asarray(imf_mins)
-        self.imf_maxs = np.asarray(imf_maxs)
+            imf_mins = self.imfs_raw.min(dim=1).values.numpy()   # (K,)
+            imf_maxs = self.imfs_raw.max(dim=1).values.numpy()   # (K,)
+        self.imf_mins = np.asarray(imf_mins, dtype=np.float32)
+        self.imf_maxs = np.asarray(imf_maxs, dtype=np.float32)
 
-        mins = torch.tensor(self.imf_mins).unsqueeze(1)  # (K,1)
+        mins = torch.tensor(self.imf_mins).unsqueeze(1)  # (K, 1)
         rngs = (torch.tensor(self.imf_maxs) - torch.tensor(self.imf_mins)).unsqueeze(1) + 1e-12
-        self.imfs_norm = (self.imfs - mins) / rngs       # (K,T) in [0,1]
+        self.imfs_norm = (self.imfs_raw - mins) / rngs   # (K, T) in [0, 1] ideally
 
-        # windows with L history + 1-step ahead
+        # number of usable windows (need L points for history + 1 for target)
         self.N = T - self.L - 1
         if self.N < 0:
             self.N = 0
@@ -102,23 +92,32 @@ class Decomp13Dataset(Dataset):
     def __len__(self):
         return self.N
 
-    def __getitem__(self, i):
+    def __getitem__(self, i: int):
+        """
+        i corresponds to window [i, ..., i+L-1] and target at time i+L.
+        """
         L = self.L
 
-        # normalized GT IMFs (K,L)
-        imf_win = self.imfs_norm[:, i:i+L]  # (K,L)
+        # x_raw: raw RRP window, shape (1, L)
+        x_raw = self.rrp_raw[i : i + L].unsqueeze(0)            # (1, L)
 
-        # raw RRP target at t+L
-        y = self.rrp[i+L]                   # scalar
+        # imf_in_norm: normalized IMF window, shape (K, L)
+        imf_in_norm = self.imfs_norm[:, i : i + L]              # (K, L)
 
-        # dummy x: shape (1,L) – you can swap to raw RRP window if your NVMD_MRC_BiLSTM uses it
-        x_dummy = torch.zeros(1, L, dtype=torch.float32)
+        # imf_target_norm: normalized IMFs at time t+L, shape (K,)
+        imf_target_norm = self.imfs_norm[:, i + L]              # (K,)
 
-        return x_dummy, imf_win, y.unsqueeze(0)  # (1,L), (K,L), (1,)
+        return x_raw, imf_in_norm, imf_target_norm
 
     def scalers(self):
-        return dict(imf_mins=self.imf_mins, imf_maxs=self.imf_maxs)
-
+        """
+        For denorm inside training:
+           imf_raw = imf_norm * (max - min) + min
+        """
+        return dict(
+            imf_mins=self.imf_mins,
+            imf_maxs=self.imf_maxs,
+        )
 
 def build_default_13(df: pd.DataFrame) -> list[str]:
     cols = [f"Mode_{i}" for i in range(1, 13)] + ["Residual"]
@@ -157,33 +156,35 @@ def train_or_eval_epoch(
         maxs=torch.tensor(imf_maxs, dtype=torch.float32, device=device),
         channel_axis=1
     )
+    
+    for x_raw, imf_in_norm, imf_target_norm in loader:
+        x_raw = x_raw.to(device)                  # (B,1,L)
+        imf_in_norm = imf_in_norm.to(device)      # (B,K,L)
+        imf_target_norm = imf_target_norm.to(device)  # (B,K)
+    
+        imfs_pred_norm, y_modes_norm_pred = model(x_raw)  # (B,K,L), (B,K)
+    
+        loss_imf = F.mse_loss(imfs_pred_norm, imf_in_norm)
+        
+        y_modes_raw_pred    = scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)
+        imf_target_raw      = scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)
+        loss_imf_next = F.mse_loss(y_modes_raw_pred, imf_target_raw)
 
-    for xb, imfs_true_norm, yb in loader:
-        xb = xb.to(device)                         # (B,1,L)
-        imfs_true_norm = imfs_true_norm.to(device) # (B,K,L)
-        yb = yb.to(device)                         # (B,1)
+    
+        scaler = MinMaxScalerND(imf_mins_tensor, imf_maxs_tensor, channel_axis=1)
+        y_pred_modes_raw = scaler.denorm(y_modes_norm_pred.unsqueeze(-1)).squeeze(-1)  # (B,K)
+        y_target_modes_raw = scaler.denorm(imf_target_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
+    
+        y_pred_rrp = y_pred_modes_raw.sum(dim=1, keepdim=True)    # (B,1)
+        y_true_rrp = y_target_modes_raw.sum(dim=1, keepdim=True)  # (B,1)
+    
+        loss_rrp = F.l1_loss(y_pred_rrp, y_true_rrp)
+    
+        # then combine however you want:
+        # total_loss = alpha * loss_imf + beta * loss_imf_next + gamma * loss_rrp
+    
 
-        # forward: NVMD_MRC_BiLSTM returns normalized IMFs + normalized per-mode scalars
-        imfs_pred_norm, y_modes_norm = model(xb)   # (B,K,L), (B,K) or (B,K,1)/(B,1,K)
-
-        # unify y_modes_norm to (B,K)
-        if y_modes_norm.dim() == 3:
-            if y_modes_norm.size(-1) == 1:
-                y_modes_norm = y_modes_norm.squeeze(-1)
-            elif y_modes_norm.size(1) == 1:
-                y_modes_norm = y_modes_norm.squeeze(1)
-
-        # # IMF MSE in normalized space
-        loss_decomp = F.mse_loss(imfs_pred_norm, imfs_true_norm)
-
-        # denorm per-mode scalar predictions to raw IMF scale
-        y_modes_raw = imf_scaler.denorm(y_modes_norm.unsqueeze(-1)).squeeze(-1)  # (B,K)
-        y_pred = y_modes_raw.sum(dim=1, keepdim=True)                            # (B,1)
-
-        # final RRP prediction MSE
-        loss_pred = F.l1_loss(y_pred, yb)
-
-        loss = beta*loss_pred + alpha*loss_decomp
+        loss = beta*loss_rrp + alpha*loss_imf_next
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
