@@ -257,9 +257,9 @@ def main():
                     help="Will be overridden by decomposer ckpt if it contains seq_len/signal_len.")
 
     # Checkpoints (these carry the hyperparameters)
-    ap.add_argument("--decomposer-ckpt", type=str, default="./nvmd_ae_imf_recon.pt"
+    ap.add_argument("--decomposer-ckpt", type=str, default="./nvmd_ae_imf_recon.pt",
                     help="Path to pretrained MultiModeNVMD checkpoint.")
-    ap.add_argument("--predictor-ckpt",  type=str, default="./transformer_only_rrp.pt"
+    ap.add_argument("--predictor-ckpt",  type=str, default="./transformer_only_rrp.pt",
                     help="Path to pretrained MultiModeTransformerRRP checkpoint.")
 
     # Freeze options
