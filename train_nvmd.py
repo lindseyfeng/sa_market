@@ -96,10 +96,10 @@ class SpectralDecomposer(nn.Module):
         masks = F.softmax(self.logits, dim=0)  # (K, F)
         diff = masks[:, 1:] - masks[:, :-1]    # (K, F-1)
         return (diff ** 2).mean()
-
+        
     def orthogonality_loss(self):
         masks = F.softmax(self.logits, dim=0)  # (K, F)
-        K, F = masks.shape
+        K, Ffreq = masks.shape
         loss = 0.0
         cnt = 0
         for i in range(K):
@@ -113,6 +113,7 @@ class SpectralDecomposer(nn.Module):
         if cnt > 0:
             loss = loss / cnt
         return loss
+
 
 
 class ModewiseRefiner(nn.Module):
