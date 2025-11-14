@@ -171,7 +171,7 @@ def main():
     # Pretrained ckpts
     ap.add_argument("--decomposer-ckpt", type=str, default="./transformer_only_rrp.pt",
                     help="Path to pretrained decomposer (MultiModeNVMD) checkpoint.")
-    ap.add_argument("--predictor-ckpt",  type=str, default="./",
+    ap.add_argument("--predictor-ckpt",  type=str, default="./nvmd_ae_imf_recon.pt",
                     help="Path to pretrained transformer predictor checkpoint.")
 
     # Freeze options
