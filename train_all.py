@@ -15,9 +15,19 @@ from nvmd_autoencoder import MultiModeNVMD
 from nvmd_transformer import MultiModeTransformerRRP  
 
 
-# ==========================================================
-#                      Utils / Dataset
-# ==========================================================
+
+class FullRRPModel(nn.Module):
+    def __init__(self, decomposer: nn.Module, predictor: nn.Module):
+        super().__init__()
+        self.decomposer = decomposer
+        self.predictor = predictor
+
+    def forward(self, x_raw: torch.Tensor) -> torch.Tensor:
+        # decomposer: (B,1,L) → (B,K,L), (B,1,L)
+        imfs, _ = self.decomposer(x_raw)
+        # predictor: (B,K,L) → (B,1)
+        rrp_next_hat = self.predictor(imfs)
+        return rrp_next_hat
 
 def set_seed(seed: int = 42):
     random.seed(seed)
@@ -170,32 +180,8 @@ def maybe_freeze(module: nn.Module, freeze: bool, name: str):
     module.eval()
 
 
-# ==========================================================
-#                    Wrapper Full Model
-# ==========================================================
-
-class FullRRPModel(nn.Module):
-    """
-    Wraps:
-      - decomposer: MultiModeNVMD returning (imfs, recon)
-      - predictor:  MultiModeTransformerRRP consuming imfs → rrp_next
-    """
-    def __init__(self, decomposer: nn.Module, predictor: nn.Module):
-        super().__init__()
-        self.decomposer = decomposer
-        self.predictor = predictor
-
-    def forward(self, x_raw: torch.Tensor) -> torch.Tensor:
-        # decomposer: (B,1,L) → (B,K,L), (B,1,L)
-        imfs, _ = self.decomposer(x_raw)
-        # predictor: (B,K,L) → (B,1)
-        rrp_next_hat = self.predictor(imfs)
-        return rrp_next_hat
 
 
-# ==========================================================
-#                         Train / Eval
-# ==========================================================
 
 def run_epoch(
     model: nn.Module,
