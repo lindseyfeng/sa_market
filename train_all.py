@@ -12,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 
 # ---- your modules ----
 from nvmd_autoencoder import MultiModeNVMD       
-from nvmd_transformer import MultiModeTransformerRRP  
+from train_transformer import MultiModeTransformerRRP  
 
 
 
