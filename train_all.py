@@ -10,6 +10,9 @@ from train_nvmd import HybridSpectralNVMD
 from train_transformer import MultiModeTransformerRRP
 
 
+# ============================================================
+# Dataset: returns  (x_raw, imfs_true, rrp_next)
+# ============================================================
 class VMD13IMFNextDataset(Dataset):
     def __init__(self, df, seq_len=64, rrp_col="RRP", K=13):
         self.L = seq_len
@@ -22,7 +25,7 @@ class VMD13IMFNextDataset(Dataset):
         self.rrp = torch.tensor(rrp)              # (T,)
         self.imfs = torch.tensor(imfs).T          # (K,T)
         T = len(rrp)
-        self.N = T - seq_len - 1                  # last index where rrp_next exists
+        self.N = T - seq_len - 1
 
     def __len__(self):
         return self.N
@@ -34,23 +37,49 @@ class VMD13IMFNextDataset(Dataset):
         rrp_next = self.rrp[i+L].unsqueeze(0)     
         return x_raw, imfs_true, rrp_next
 
-def train_epoch(
-    decomposer,
-    predictor,
-    loader,
-    optimizer,
-    device,
-    w_pred,
-    w_imf,
-    w_rrp,
-    w_smooth,
-    w_ortho,
-    clip_grad=10.0,
+
+
+# ============================================================
+# Training functions
+# ============================================================
+def train_predictor_only(decomposer, predictor, loader, opt, device):
+    decomposer.eval()                 # freeze structure
+    predictor.train()
+
+    tot_pred = 0.0
+    n = 0
+
+    for x_raw, imfs_true, rrp_next in loader:
+        x_raw, rrp_next = x_raw.to(device), rrp_next.to(device)
+
+        opt.zero_grad()
+
+        # forward: use frozen decomposer IMFs only
+        with torch.no_grad():
+            imfs_ref, _, _, _ = decomposer(x_raw)
+
+        rrp_hat = predictor(imfs_ref)
+
+        loss = F.mse_loss(rrp_hat, rrp_next)
+        loss.backward()
+        opt.step()
+
+        bs = x_raw.size(0)
+        tot_pred += loss.item() * bs
+        n += bs
+
+    return tot_pred / n
+
+
+
+def train_joint(
+    decomposer, predictor, loader, opt, device,
+    w_pred, w_imf, w_rrp, w_smooth, w_ortho,
 ):
     decomposer.train()
     predictor.train()
 
-    total_pred = total_imf = total_rrp = 0.0
+    tot_pred = 0.0
     n = 0
 
     for x_raw, imfs_true, rrp_next in loader:
@@ -58,187 +87,165 @@ def train_epoch(
         imfs_true = imfs_true.to(device)
         rrp_next = rrp_next.to(device)
 
-        optimizer.zero_grad()
+        opt.zero_grad()
 
-        # forward pass
+        # Decomposer forward
         imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)
-        rrp_next_hat = predictor(imfs_ref)
 
-        # losses
-        loss_pred = F.mse_loss(rrp_next_hat, rrp_next)
-        loss_imf = F.l1_loss(imfs_ref, imfs_true)
-        loss_rrp = F.l1_loss(recon_ref, x_raw)
+        # Predictor forward
+        rrp_hat = predictor(imfs_ref)
+
+        # Combined joint loss
+        loss_pred = F.mse_loss(rrp_hat, rrp_next)
+        loss_imf  = F.l1_loss(imfs_ref, imfs_true)
+        loss_rrp  = F.l1_loss(recon_ref, x_raw)
+
         loss_smooth = decomposer.spectral.spectral_smoothness_loss()
-        loss_ortho = decomposer.spectral.orthogonality_loss()
+        loss_ortho  = decomposer.spectral.orthogonality_loss()
 
         loss = (
             w_pred * loss_pred
-            #  + w_imf * loss_imf +
-            # w_rrp * loss_rrp +
-            # w_smooth * loss_smooth +
-            # w_ortho * loss_ortho
+          + w_imf  * loss_imf
+          + w_rrp  * loss_rrp
+          + w_smooth * loss_smooth
+          + w_ortho  * loss_ortho
         )
 
         loss.backward()
-        nn.utils.clip_grad_norm_(list(decomposer.parameters()) + list(predictor.parameters()), clip_grad)
-        optimizer.step()
+        nn.utils.clip_grad_norm_(
+            list(decomposer.parameters()) + list(predictor.parameters()), 10.0
+        )
+        opt.step()
 
-        # logging
         bs = x_raw.size(0)
+        tot_pred += loss_pred.item() * bs
         n += bs
-        total_pred += loss_pred.item() * bs
-        total_imf += loss_imf.item() * bs
-        total_rrp += loss_rrp.item() * bs
 
-    return total_pred/n, total_imf/n, total_rrp/n
+    return tot_pred / n
 
 
-def eval_epoch(decomposer, predictor, loader, device):
+
+def eval_all(decomposer, predictor, loader, device):
     decomposer.eval()
     predictor.eval()
 
-    total_pred = total_imf = total_rrp = total_mae = 0.0
+    tot_mse = tot_mae = 0.0
     n = 0
 
     with torch.no_grad():
         for x_raw, imfs_true, rrp_next in loader:
             x_raw = x_raw.to(device)
-            imfs_true = imfs_true.to(device)
             rrp_next = rrp_next.to(device)
 
-            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)
-            rrp_next_hat = predictor(imfs_ref)
+            imfs_ref, _, _, _ = decomposer(x_raw)
+            rrp_hat = predictor(imfs_ref)
 
-            loss_pred = F.mse_loss(rrp_next_hat, rrp_next)
-            loss_imf = F.l1_loss(imfs_ref, imfs_true)
-            loss_rrp = F.l1_loss(recon_ref, x_raw)
-            mae = F.l1_loss(rrp_next_hat, rrp_next)
+            mse = F.mse_loss(rrp_hat, rrp_next)
+            mae = F.l1_loss(rrp_hat, rrp_next)
 
             bs = x_raw.size(0)
+            tot_mse += mse.item() * bs
+            tot_mae += mae.item() * bs
             n += bs
-            total_pred += loss_pred.item() * bs
-            total_imf += loss_imf.item() * bs
-            total_rrp += loss_rrp.item() * bs
-            total_mae += mae.item() * bs
 
-    return (
-        total_pred/n,
-        total_imf/n,
-        total_rrp/n,
-        total_mae/n,
-    )
+    return tot_mse / n, tot_mae / n
 
 
+
+# ============================================================
+# Main: warmup → joint
+# ============================================================
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--train-csv", type=str, default="VMD_modes_with_residual_2018_2021.csv")
-    ap.add_argument("--val-csv", type=str, default="VMD_modes_with_residual_2021_2022.csv")
+    ap.add_argument("--train-csv", type=str, required=True)
+    ap.add_argument("--val-csv", type=str, required=True)
+
     ap.add_argument("--seq-len", type=int, default=256)
     ap.add_argument("--K", type=int, default=13)
 
-    # pretrained weights
-    ap.add_argument("--decomposer_ckpt", type=str, default="./hybrid_spectral_nvmd.pt")
-    ap.add_argument("--predictor_ckpt", type=str, default="./transformer_only_rrp.pt")
+    ap.add_argument("--decomposer-ckpt", type=str, required=True)
+    ap.add_argument("--predictor-ckpt", type=str, required=True)
 
-    # training
-    ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--epochs", type=int, default=20)
+    # training stages
+    ap.add_argument("--warmup-epochs", type=int, default=20)
+    ap.add_argument("--joint-epochs", type=int, default=20)
     ap.add_argument("--lr", type=float, default=1e-4)
 
-    # loss weights
+    # joint loss weights
     ap.add_argument("--w-pred", type=float, default=1.0)
     ap.add_argument("--w-imf", type=float, default=1.0)
     ap.add_argument("--w-rrp", type=float, default=0.1)
     ap.add_argument("--w-smooth", type=float, default=1e-3)
     ap.add_argument("--w-ortho", type=float, default=1e-3)
 
-    ap.add_argument("--freeze-decomposer", action="store_true")
-
-    ap.add_argument("--out", type=str, default="./joint_finetune.pt")
+    ap.add_argument("--out", type=str, default="joint.pt")
 
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load data
+    # ==== data ====
     df_tr = pd.read_csv(args.train_csv)
     df_va = pd.read_csv(args.val_csv)
+    tr_dl = DataLoader(VMD13IMFNextDataset(df_tr, seq_len=args.seq_len, K=args.K),
+                       batch_size=256, shuffle=True, drop_last=True)
+    va_dl = DataLoader(VMD13IMFNextDataset(df_va, seq_len=args.seq_len, K=args.K),
+                       batch_size=256, shuffle=False)
 
-    tr_ds = VMD13IMFNextDataset(df_tr, seq_len=args.seq_len, K=args.K)
-    va_ds = VMD13IMFNextDataset(df_va, seq_len=args.seq_len, K=args.K)
-
-    tr_dl = DataLoader(tr_ds, batch_size=args.batch, shuffle=True, drop_last=True)
-    va_dl = DataLoader(va_ds, batch_size=args.batch, shuffle=False)
-
-
+    # ==== load models ====
     decomposer = HybridSpectralNVMD(K=args.K, signal_len=args.seq_len).to(device)
-    dec_ckpt = torch.load(args.decomposer_ckpt, map_location="cpu")
-    
-    if "model_state" in dec_ckpt:
-        dec_state = dec_ckpt["model_state"]
-    elif "decomposer_state" in dec_ckpt:
-        dec_state = dec_ckpt["decomposer_state"]
-    else:
-        dec_state = dec_ckpt
-    
-    missing_d, unexpected_d = decomposer.load_state_dict(dec_state, strict=False)
-    print("DECOMPOSER missing:", missing_d)
-    print("DECOMPOSER unexpected:", unexpected_d)
-    
+    dec_sd = torch.load(args.decomposer_ckpt, map_location="cpu")
+    dec_sd = dec_sd.get("decomposer_state", dec_sd)
+    decomposer.load_state_dict(dec_sd, strict=False)
 
     predictor = MultiModeTransformerRRP(K=args.K, seq_len=args.seq_len).to(device)
-    pred_ckpt = torch.load(args.predictor_ckpt, map_location="cpu")
-    
-    if "model_state" in pred_ckpt:
-        pred_state = pred_ckpt["model_state"]
-    elif "predictor_state" in pred_ckpt:
-        pred_state = pred_ckpt["predictor_state"]
-    else:
-        pred_state = pred_ckpt
-    
-    missing_p, unexpected_p = predictor.load_state_dict(pred_state, strict=False)
-    print("PREDICTOR missing:", missing_p)
-    print("PREDICTOR unexpected:", unexpected_p)
-    
-    # freeze option
-    if args.freeze_decomposer:
-        for p in decomposer.parameters():
-            p.requires_grad = False
+    pred_sd = torch.load(args.predictor_ckpt, map_location="cpu")
+    pred_sd = pred_sd.get("predictor_state", pred_sd)
+    predictor.load_state_dict(pred_sd, strict=False)
 
-    params = list(predictor.parameters()) if args.freeze_decomposer else \
-             list(decomposer.parameters()) + list(predictor.parameters())
+    # ===========================
+    #     STAGE 1 — WARMUP
+    # ===========================
+    print("\n====== Stage 1: Train predictor only (frozen decomposer) ======\n")
 
-    optimizer = torch.optim.Adam(params, lr=args.lr)
+    for p in decomposer.parameters():
+        p.requires_grad = False
 
-    best_mae = float("inf")
+    opt_pred = torch.optim.Adam(predictor.parameters(), lr=args.lr)
 
-    for ep in range(1, args.epochs+1):
-        tr_mse, tr_imf, tr_rrp = train_epoch(
-            decomposer, predictor, tr_dl, optimizer, device,
+    for ep in range(1, args.warmup_epochs + 1):
+        tr = train_predictor_only(decomposer, predictor, tr_dl, opt_pred, device)
+        va_mse, va_mae = eval_all(decomposer, predictor, va_dl, device)
+        print(f"[Warmup {ep:03d}] train pred={tr:.4f} | val MSE={va_mse:.4f} MAE={va_mae:.4f}")
+
+    # ===========================
+    #     STAGE 2 — JOINT
+    # ===========================
+    print("\n====== Stage 2: Joint training ======\n")
+
+    for p in decomposer.parameters():
+        p.requires_grad = True
+
+    opt_joint = torch.optim.Adam(
+        list(decomposer.parameters()) + list(predictor.parameters()),
+        lr=args.lr
+    )
+
+    for ep in range(1, args.joint_epochs + 1):
+        tr = train_joint(
+            decomposer, predictor, tr_dl, opt_joint, device,
             args.w_pred, args.w_imf, args.w_rrp, args.w_smooth, args.w_ortho
         )
+        va_mse, va_mae = eval_all(decomposer, predictor, va_dl, device)
+        print(f"[Joint {ep:03d}] train pred={tr:.4f} | val MSE={va_mse:.4f} MAE={va_mae:.4f}")
 
-        va_mse, va_imf, va_rrp, va_mae = eval_epoch(
-            decomposer, predictor, va_dl, device
-        )
-
-        print(
-            f"[Epoch {ep:03d}] "
-            f"train MSE={tr_mse:.4f} IMF={tr_imf:.4f} RRPwin={tr_rrp:.4f} | "
-            f"val MSE={va_mse:.4f} IMF={va_imf:.4f} RRPwin={va_rrp:.4f} MAE={va_mae:.4f}"
-        )
-
-        if va_mae < best_mae:
-            best_mae = va_mae
-            ckpt = {
-                "epoch": ep,
-                "decomposer_state": decomposer.state_dict(),
-                "predictor_state": predictor.state_dict(),
-                "best_val_mae": best_mae,
-            }
-            torch.save(ckpt, args.out)
-            print(f" → Saved best checkpoint (val MAE={best_mae:.4f})")
-
+        # save best
+        ckpt = {
+            "decomposer_state": decomposer.state_dict(),
+            "predictor_state": predictor.state_dict(),
+            "epoch": ep,
+        }
+        torch.save(ckpt, args.out)
 
 
 if __name__ == "__main__":
