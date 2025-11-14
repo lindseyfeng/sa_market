@@ -170,16 +170,38 @@ def main():
     tr_dl = DataLoader(tr_ds, batch_size=args.batch, shuffle=True, drop_last=True)
     va_dl = DataLoader(va_ds, batch_size=args.batch, shuffle=False)
 
-    # -------------------------
-    # Load pretrained models
-    # -------------------------
+
     decomposer = HybridSpectralNVMD(K=args.K, signal_len=args.seq_len).to(device)
-    decomposer.load_state_dict(torch.load(args.decomposer_ckpt))
+    dec_ckpt = torch.load(args.decomposer_ckpt, map_location="cpu")
+    
+    if "model_state" in dec_ckpt:
+        dec_state = dec_ckpt["model_state"]
+    elif "decomposer_state" in dec_ckpt:
+        dec_state = dec_ckpt["decomposer_state"]
+    else:
+        dec_state = dec_ckpt
+    
+    missing_d, unexpected_d = decomposer.load_state_dict(dec_state, strict=False)
+    print("DECOMPOSER missing:", missing_d)
+    print("DECOMPOSER unexpected:", unexpected_d)
+    
 
     predictor = MultiModeTransformerRRP(K=args.K, seq_len=args.seq_len).to(device)
-    ckpt = torch.load(args.predictor_ckpt, map_location="cpu")
+    pred_ckpt = torch.load(args.predictor_ckpt, map_location="cpu")
     
-    state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
+    if "model_state" in pred_ckpt:
+        pred_state = pred_ckpt["model_state"]
+    elif "predictor_state" in pred_ckpt:
+        pred_state = pred_ckpt["predictor_state"]
+    else:
+        pred_state = pred_ckpt
+    
+    missing_p, unexpected_p = predictor.load_state_dict(pred_state, strict=False)
+    print("PREDICTOR missing:", missing_p)
+    print("PREDICTOR unexpected:", unexpected_p)
+    
+        
+        state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
     
     missing, unexpected = predictor.load_state_dict(state_dict, strict=False)
     print("missing:", missing)
