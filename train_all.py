@@ -138,8 +138,8 @@ def main():
     ap.add_argument("--K", type=int, default=13)
 
     # pretrained weights
-    ap.add_argument("--decomposer-ckpt", type=str, default="./decomposer.pt")
-    ap.add_argument("--predictor-ckpt", type=str, default="./predictor.pt")
+    ap.add_argument("--decomposer-ckpt", type=str, default="./hybrid_spectral_nvmd.pt")
+    ap.add_argument("--predictor-ckpt", type=str, default="./transformer_only_rrp.pt")
 
     # training
     ap.add_argument("--batch", type=int, default=256)
