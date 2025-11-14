@@ -138,8 +138,8 @@ def main():
     ap.add_argument("--K", type=int, default=13)
 
     # pretrained weights
-    ap.add_argument("--decomposer-ckpt", type=str, default="./hybrid_spectral_nvmd.pt")
-    ap.add_argument("--predictor-ckpt", type=str, default="./transformer_only_rrp.pt")
+    ap.add_argument("--decomposer_ckpt", type=str, default="./hybrid_spectral_nvmd.pt")
+    ap.add_argument("--predictor_ckpt", type=str, default="./transformer_only_rrp.pt")
 
     # training
     ap.add_argument("--batch", type=int, default=256)
@@ -177,7 +177,7 @@ def main():
     decomposer.load_state_dict(torch.load(args.decomposer_ckpt))
 
     predictor = MultiModeTransformerRRP(K=args.K, seq_len=args.seq_len).to(device)
-    ckpt = torch.load(args.ckpt, map_location="cpu")
+    ckpt = torch.load(args.predictor_ckpt, map_location="cpu")
     
     state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
     
