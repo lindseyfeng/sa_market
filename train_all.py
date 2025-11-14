@@ -177,7 +177,15 @@ def main():
     decomposer.load_state_dict(torch.load(args.decomposer_ckpt))
 
     predictor = MultiModeTransformerRRP(K=args.K, seq_len=args.seq_len).to(device)
-    predictor.load_state_dict(torch.load(args.predictor_ckpt))
+    ckpt = torch.load(args.ckpt, map_location="cpu")
+    
+    state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
+    
+    missing, unexpected = predictor.load_state_dict(state_dict, strict=False)
+    print("missing:", missing)
+    print("unexpected:", unexpected)
+
+
 
     # freeze option
     if args.freeze_decomposer:
