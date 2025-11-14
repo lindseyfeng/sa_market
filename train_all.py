@@ -72,11 +72,11 @@ def train_epoch(
         loss_ortho = decomposer.spectral.orthogonality_loss()
 
         loss = (
-            w_pred * loss_pred +
-            w_imf * loss_imf +
-            w_rrp * loss_rrp +
-            w_smooth * loss_smooth +
-            w_ortho * loss_ortho
+            w_pred * loss_pred
+            #  + w_imf * loss_imf +
+            # w_rrp * loss_rrp +
+            # w_smooth * loss_smooth +
+            # w_ortho * loss_ortho
         )
 
         loss.backward()
