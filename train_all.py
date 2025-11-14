@@ -11,8 +11,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 # ---- your modules ----
-from nvmd_autoencoder import MultiModeNVMD       # the decomposer definition
-from nvmd_transformer_rrp_model import MultiModeTransformerRRP  # the predictor definition
+from nvmd_autoencoder import MultiModeNVMD       
+from nvmd_transformer import MultiModeTransformerRRP  
 
 
 # ==========================================================
