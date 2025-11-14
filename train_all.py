@@ -97,7 +97,6 @@ def train_joint(
 
         # Combined joint loss
         loss_pred = F.mse_loss(rrp_hat, rrp_next)
-        loss_imf  = F.l1_loss(imfs_ref, imfs_true)
         loss_rrp  = F.l1_loss(recon_ref, x_raw)
 
         loss_smooth = decomposer.spectral.spectral_smoothness_loss()
@@ -105,7 +104,6 @@ def train_joint(
 
         loss = (
             w_pred * loss_pred
-          + w_imf  * loss_imf
           + w_rrp  * loss_rrp
           + w_smooth * loss_smooth
           + w_ortho  * loss_ortho
@@ -203,9 +201,6 @@ def main():
     pred_sd = pred_sd.get("predictor_state", pred_sd)
     predictor.load_state_dict(pred_sd, strict=False)
 
-    # ===========================
-    #     STAGE 1 — WARMUP
-    # ===========================
     print("\n====== Stage 1: Train predictor only (frozen decomposer) ======\n")
 
     for p in decomposer.parameters():
@@ -218,9 +213,6 @@ def main():
         va_mse, va_mae = eval_all(decomposer, predictor, va_dl, device)
         print(f"[Warmup {ep:03d}] train pred={tr:.4f} | val MSE={va_mse:.4f} MAE={va_mae:.4f}")
 
-    # ===========================
-    #     STAGE 2 — JOINT
-    # ===========================
     print("\n====== Stage 2: Joint training ======\n")
 
     for p in decomposer.parameters():
