@@ -138,7 +138,7 @@ def run_epoch(
         mae = F.l1_loss(rrp_next_hat, rrp_next)
 
         if is_train:
-            mse.backward()
+            mae.backward()
             torch.nn.utils.clip_grad_norm_(predictor.parameters(), max_grad_norm)
             optimizer.step()
 
