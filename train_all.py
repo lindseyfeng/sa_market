@@ -200,15 +200,6 @@ def main():
     print("PREDICTOR missing:", missing_p)
     print("PREDICTOR unexpected:", unexpected_p)
     
-        
-    state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
-    
-    missing, unexpected = predictor.load_state_dict(state_dict, strict=False)
-    print("missing:", missing)
-    print("unexpected:", unexpected)
-
-
-
     # freeze option
     if args.freeze_decomposer:
         for p in decomposer.parameters():
