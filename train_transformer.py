@@ -10,6 +10,141 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
+class ModeTime2DTransformerRRP(nn.Module):
+    """
+    Predictor that:
+      - treats each (mode k, time t) as a separate token,
+      - uses a Transformer over all K*L tokens (full cross-mode/time attention),
+      - then aggregates per-mode representations to get:
+          * per-mode contributions y_k
+          * per-mode importance α_k
+      - final prediction is sum_k α_k * y_k.
+
+    Input:
+      x_modes: (B, K, L)  IMFs / modes over time
+
+    Output (default):
+      y_pred: (B, 1)
+
+    Output (if return_details=True):
+      y_pred:      (B, 1)
+      y_k:         (B, K)      # per-mode contributions
+      alpha_k:     (B, K)      # per-mode importance (softmax)
+    """
+
+    def __init__(
+        self,
+        K: int,
+        seq_len: int,
+        d_model: int = 128,
+        n_heads: int = 4,
+        num_layers: int = 3,
+        dim_ff: int = 256,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.K = K
+        self.seq_len = seq_len
+        self.d_model = d_model
+
+        # Project scalar IMF value → d_model (no mixing across modes here)
+        self.value_proj = nn.Linear(1, d_model)
+
+        # Separate embeddings for mode index and time index
+        self.mode_emb = nn.Embedding(K, d_model)
+        self.time_emb = nn.Embedding(seq_len, d_model)
+
+        # Transformer over tokens (mode,time) flattened to length N = K*L
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=dim_ff,
+            dropout=dropout,
+            batch_first=True,   # (B, N, d_model)
+            activation="gelu",
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # Per-mode contribution head: mode feature -> scalar y_k
+        self.mode_head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
+
+        # Per-mode importance head: mode feature -> score s_k
+        self.imp_head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 1),
+        )
+
+    def forward(self, x_modes: torch.Tensor, return_details: bool = False):
+        """
+        x_modes: (B, K, L)
+        """
+        B, K, L = x_modes.shape
+        assert K == self.K, f"Expected K={self.K}, got {K}"
+        assert L == self.seq_len, f"Expected seq_len={self.seq_len}, got {L}"
+
+        device = x_modes.device
+
+        # ----------------------------------------------------------
+        # 1) Build tokens for each (mode k, time t)
+        # ----------------------------------------------------------
+        # Values: (B,K,L,1) -> proj -> (B,K,L,d_model)
+        vals = x_modes.unsqueeze(-1)                # (B,K,L,1)
+        v_emb = self.value_proj(vals)              # (B,K,L,d_model)
+
+        # Mode ids and time ids
+        mode_ids = torch.arange(K, device=device).view(1, K, 1).expand(B, K, L)
+        time_ids = torch.arange(L, device=device).view(1, 1, L).expand(B, K, L)
+
+        m_emb = self.mode_emb(mode_ids)            # (B,K,L,d_model)
+        t_emb = self.time_emb(time_ids)            # (B,K,L,d_model)
+
+        tokens = v_emb + m_emb + t_emb             # (B,K,L,d_model)
+
+        # Flatten (mode,time) into a single sequence dimension: N = K*L
+        tokens = tokens.view(B, K * L, self.d_model)   # (B,N,d_model)
+
+        # ----------------------------------------------------------
+        # 2) Transformer over all mode-time tokens (full contextual)
+        # ----------------------------------------------------------
+        H = self.encoder(tokens)                   # (B,N,d_model)
+
+        # Reshape back: (B,K,L,d_model)
+        H_modes = H.view(B, K, L, self.d_model)
+
+        # ----------------------------------------------------------
+        # 3) Per-mode features: aggregate over time
+        # ----------------------------------------------------------
+        # Simple choice: mean over time for each mode
+        mode_feat = H_modes.mean(dim=2)            # (B,K,d_model)
+
+        # ----------------------------------------------------------
+        # 4) Per-mode contributions and importance
+        # ----------------------------------------------------------
+        # y_k: (B,K)
+        y_k = self.mode_head(mode_feat).squeeze(-1)
+
+        # scores s_k -> importance α_k via softmax
+        s_k = self.imp_head(mode_feat).squeeze(-1)     # (B,K)
+        alpha_k = F.softmax(s_k, dim=-1)               # (B,K)
+
+        # ----------------------------------------------------------
+        # 5) Final prediction as weighted sum over modes
+        # ----------------------------------------------------------
+        y_pred = (alpha_k * y_k).sum(dim=-1, keepdim=True)   # (B,1)
+
+        if return_details:
+            return y_pred, y_k, alpha_k
+        else:
+            return y_pred
+
+
 
 # ============================================================
 #                     Positional Encoding
