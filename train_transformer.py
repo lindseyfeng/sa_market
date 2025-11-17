@@ -249,7 +249,7 @@ def main():
     ap.add_argument("--val-csv", type=str,
                     default="VMD_modes_with_residual_2021_2022.csv")
     ap.add_argument("--rrp-col", type=str, default="RRP")
-    ap.add_argument("--seq-len", type=int, default=256)
+    ap.add_argument("--seq-len", type=int, default=9)
 
     # Model
     ap.add_argument("--K", type=int, default=13,
@@ -262,7 +262,7 @@ def main():
 
     # Training
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--epochs", type=int, default=300)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-2)
     ap.add_argument("--seed", type=int, default=42)
