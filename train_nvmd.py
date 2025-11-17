@@ -195,7 +195,6 @@ class HybridSpectralNVMD(nn.Module):
         imfs_refined = self.refiner(imfs_lin)                    # (B,K,L)
         recon_refined = imfs_refined.sum(dim=1, keepdim=True)    # (B,1,L)
         return imfs_refined, recon_refined, imfs_lin, recon_lin
-
 def train_epoch(
     model: HybridSpectralNVMD,
     loader: DataLoader,
@@ -208,9 +207,12 @@ def train_epoch(
     clip_grad: float | None = 10.0,
 ):
     model.train()
-    total_imf = 0.0
+    total_imf_rel = 0.0   # average relative RMSE over windows
+    total_imf_mae = 0.0   # for logging only
     total_rrp = 0.0
     n = 0
+
+    eps = 1e-8
 
     for x_raw, imfs_true in loader:
         x_raw = x_raw.to(device)          # (B,1,L)
@@ -218,12 +220,28 @@ def train_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        imfs_ref, recon_ref, imfs_lin, recon_lin = model(x_raw)
+        imfs_ref, recon_ref, imfs_lin, recon_lin = model(x_raw)  # (B,K,L), (B,1,L), ...
 
-        # IMF reconstruction loss (refined IMFs vs benchmark IMFs)
-        loss_imf = F.l1_loss(imfs_ref, imfs_true)
+        # ------------------------------------------------------
+        # IMF reconstruction loss: per-window relative RMSE
+        # ------------------------------------------------------
+        # delta: (B,K,L)
+        delta = imfs_ref - imfs_true
 
-        # RRP reconstruction loss (sum of refined IMFs vs raw RRP window)
+        # per-window numerator / denominator
+        num = (delta ** 2).sum(dim=(1, 2))            # (B,)
+        den = (imfs_true ** 2).sum(dim=(1, 2)) + eps  # (B,)
+
+        # relRMSE per window, then mean over batch
+        rel_rmse = torch.sqrt(num / den)             # (B,)
+        loss_imf = rel_rmse.mean()
+
+        # simple IMF MAE (for logging only)
+        imf_mae = delta.abs().mean()
+
+        # ------------------------------------------------------
+        # RRP reconstruction loss (sum over modes vs raw window)
+        # ------------------------------------------------------
         loss_rrp = F.l1_loss(recon_ref, x_raw)
 
         # spectral regularizers
@@ -245,17 +263,26 @@ def train_epoch(
 
         bs = x_raw.size(0)
         n += bs
-        total_imf += loss_imf.item() * bs
+        total_imf_rel += rel_rmse.mean().item() * bs
+        total_imf_mae += imf_mae.item() * bs
         total_rrp += loss_rrp.item() * bs
 
-    return total_imf / n, total_rrp / n
+    denom = max(n, 1)
+    # return both relRMSE and MAE for IMFs, plus RRP MAE
+    return (
+        total_imf_rel / denom,
+        total_imf_mae / denom,
+        total_rrp / denom,
+    )
 
 
 def eval_epoch(model: HybridSpectralNVMD, loader: DataLoader, device: str):
     model.eval()
-    total_imf = 0.0
+    total_imf_rel = 0.0
+    total_imf_mae = 0.0
     total_rrp = 0.0
     n = 0
+    eps = 1e-8
 
     with torch.no_grad():
         for x_raw, imfs_true in loader:
@@ -264,15 +291,28 @@ def eval_epoch(model: HybridSpectralNVMD, loader: DataLoader, device: str):
 
             imfs_ref, recon_ref, imfs_lin, recon_lin = model(x_raw)
 
-            loss_imf = F.l1_loss(imfs_ref, imfs_true)
+            delta = imfs_ref - imfs_true  # (B,K,L)
+
+            num = (delta ** 2).sum(dim=(1, 2))            # (B,)
+            den = (imfs_true ** 2).sum(dim=(1, 2)) + eps  # (B,)
+            rel_rmse = torch.sqrt(num / den)              # (B,)
+            loss_imf = rel_rmse.mean()
+
+            imf_mae = delta.abs().mean()
             loss_rrp = F.l1_loss(recon_ref, x_raw)
 
             bs = x_raw.size(0)
             n += bs
-            total_imf += loss_imf.item() * bs
+            total_imf_rel += rel_rmse.mean().item() * bs
+            total_imf_mae += imf_mae.item() * bs
             total_rrp += loss_rrp.item() * bs
 
-    return total_imf / n, total_rrp / n
+    denom = max(n, 1)
+    return (
+        total_imf_rel / denom,
+        total_imf_mae / denom,
+        total_rrp / denom,
+    )
 
 
 def main():
