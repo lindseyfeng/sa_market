@@ -8,7 +8,7 @@ Train a new Transformer predictor on top of a pretrained HybridSpectralNVMD deco
 
 Usage example:
 
-    python3 train_nvmd_transformer.py \
+    python train_transformer_freeze_nvmd.py \
         --train-csv VMD_modes_with_residual_2018_2021.csv \
         --val-csv   VMD_modes_with_residual_2021_2022.csv \
         --decomposer-ckpt hybrid_spectral_nvmd.pt \
