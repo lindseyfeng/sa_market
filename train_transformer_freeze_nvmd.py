@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
 """
-Train a Transformer predictor on top of a pretrained HybridSpectralNVMD decomposer.
-
-Two-stage training:
-  1) Warmup: freeze decomposer, train predictor only for `warmup_epochs`.
-  2) Joint:  train decomposer + predictor jointly for `joint_epochs`.
-
-Usage example:
-
     python train_transformer_freeze_nvmd.py \
         --train-csv VMD_modes_with_residual_2018_2021.csv \
         --val-csv   VMD_modes_with_residual_2021_2022.csv \
         --decomposer-ckpt hybrid_spectral_nvmd.pt \
-        --seq-len 258 \
+        --seq-len 256 \
         --warmup-epochs 20 \
         --joint-epochs 100 \
         --out nvmd_transformer_rrp.pt
