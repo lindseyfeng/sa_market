@@ -370,10 +370,12 @@ def main():
     model = HybridSpectralNVMD(K=args.K, signal_len=args.seq_len).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    best_val_imf = float("inf")
+    # track best validation **relative RMSE** on IMFs
+    best_val_imf_rel = float("inf")
 
     for ep in range(1, args.epochs + 1):
-        tr_imf, tr_rrp = train_epoch(
+        # train_epoch returns: (imf_rel_rmse, imf_mae, rrp_mae)
+        tr_imf_rel, tr_imf_mae, tr_rrp_mae = train_epoch(
             model,
             tr_dl,
             opt,
@@ -384,20 +386,26 @@ def main():
             w_ortho=args.w_ortho,
             clip_grad=args.clip_grad,
         )
-        va_imf, va_rrp = eval_epoch(model, va_dl, device)
+        va_imf_rel, va_imf_mae, va_rrp_mae = eval_epoch(model, va_dl, device)
 
         print(
             f"[Epoch {ep:03d}] "
-            f"train IMF MAE={tr_imf:.4f} | train RRP MAE={tr_rrp:.4f} || "
-            f"val IMF MAE={va_imf:.4f} | val RRP MAE={va_rrp:.4f}"
+            f"train IMF relRMSE={tr_imf_rel:.4f} MAE={tr_imf_mae:.4f} | "
+            f"train RRP MAE={tr_rrp_mae:.4f} || "
+            f"val IMF relRMSE={va_imf_rel:.4f} MAE={va_imf_mae:.4f} | "
+            f"val RRP MAE={va_rrp_mae:.4f}"
         )
 
-        # save best on IMF reconstruction
-        if va_imf < best_val_imf:
-            best_val_imf = va_imf
+        # save best on IMF *relative RMSE*
+        if va_imf_rel < best_val_imf_rel:
+            best_val_imf_rel = va_imf_rel
             torch.save(model.state_dict(), args.out)
-            print(f"  → Saved new best checkpoint with val IMF MAE={best_val_imf:.4f} to {args.out}")
+            print(
+                f"  → Saved new best checkpoint with val IMF relRMSE={best_val_imf_rel:.4f} "
+                f"to {args.out}"
+            )
 
 
 if __name__ == "__main__":
     main()
+
