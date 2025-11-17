@@ -48,15 +48,6 @@ def train_decomposer_only(
     decomposer, predictor, loader, opt, device,
     w_pred, w_imf, w_rrp, w_smooth, w_ortho,
 ):
-    """
-    Stage 1:
-      - Freeze predictor params.
-      - Update decomposer so that:
-        * its modes fed into predictor minimize RRP MSE (main driver),
-        * recon_ref matches x_raw,
-        * spectral regularizers are satisfied,
-        * optionally match true IMFs if w_imf > 0.
-    """
     decomposer.train()
     predictor.eval()
 
@@ -112,9 +103,6 @@ def train_decomposer_only(
 
 
 def train_predictor_only(decomposer, predictor, loader, opt, device):
-    """
-    Stage 2: freeze decomposer, train predictor on top of decomposed modes.
-    """
     decomposer.eval()
     predictor.train()
 
@@ -153,9 +141,6 @@ def train_joint(
     decomposer, predictor, loader, opt, device,
     w_pred, w_imf, w_rrp, w_smooth, w_ortho,
 ):
-    """
-    Stage 3: jointly train decomposer + predictor end-to-end.
-    """
     decomposer.train()
     predictor.train()
 
