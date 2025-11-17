@@ -270,9 +270,13 @@ def main():
         K=args.K,
         seq_len=args.pred_len,
     ).to(device)
-    pred_sd = torch.load(args.predictor_ckpt, map_location="cpu")
-    pred_sd = pred_sd.get("predictor_state", pred_sd)
-    predictor.load_state_dict(pred_sd, strict=False)
+    ckpt = torch.load(args.predictor_ckpt, map_location="cpu")
+    if "model_state" in ckpt:
+        predictor.load_state_dict(ckpt["model_state"])
+    else:
+        print("wrong!!")
+        predictor.load_state_dict(ckpt)  
+
 
     # ========================================================
     # Stage 1: predictor warmup (decomposer frozen)
