@@ -198,8 +198,8 @@ def main():
     ap.add_argument("--dropout", type=float, default=0.1)
 
     # Training
-    ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--lr-dec", type=float, default=3e-4,
                     help="LR for decomposer")
     ap.add_argument("--lr-pred", type=float, default=1e-4,
