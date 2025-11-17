@@ -13,7 +13,7 @@ Usage example:
         --val-csv   VMD_modes_with_residual_2021_2022.csv \
         --decomposer-ckpt hybrid_spectral_nvmd.pt \
         --seq-len 64 \
-        --epochs 50 \
+        --epochs 200 \
         --out nvmd_transformer_rrp.pt
 """
 
