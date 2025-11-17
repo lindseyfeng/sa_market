@@ -213,14 +213,16 @@ def eval_all(decomposer, predictor, loader, device):
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--train-csv", type=str, required=True)
-    ap.add_argument("--val-csv", type=str, required=True)
+    ap.add_argument("--train-csv", type=str,
+                    default="VMD_modes_with_residual_2018_2021.csv")
+    ap.add_argument("--val-csv", type=str,
+                    default="VMD_modes_with_residual_2021_2022.csv")
 
     ap.add_argument("--seq-len", type=int, default=256)
     ap.add_argument("--K", type=int, default=13)
 
-    ap.add_argument("--decomposer-ckpt", type=str, required=True)
-    ap.add_argument("--predictor-ckpt", type=str, required=True)
+    ap.add_argument("--decomposer-ckpt", type=str, default="./hybrid_spectral_nvmd.pt")
+    ap.add_argument("--predictor-ckpt", type=str,  default="./transformer_only_rrp.pt")
 
     # training stages
     ap.add_argument("--decomp-epochs", type=int, default=20)
