@@ -193,9 +193,9 @@ def main():
 
     # Training
     ap.add_argument("--batch",          type=int,   default=256)
-    ap.add_argument("--warmup-epochs",  type:int,   default=20,
+    ap.add_argument("--warmup-epochs",  type=int,   default=20,
                     help="Epochs with decomposer frozen (predictor only).")
-    ap.add_argument("--joint-epochs",   type:int,   default=30,
+    ap.add_argument("--joint-epochs",   type=int,   default=30,
                     help="Epochs of joint training (decomposer + predictor).")
     ap.add_argument("--lr",             type=float, default=1e-4)
     ap.add_argument("--weight-decay",   type=float, default=1e-2)
