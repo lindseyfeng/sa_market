@@ -56,63 +56,116 @@ class VMD13IMFDataset(Dataset):
 
         return x_raw, imfs_true
 
+class ConditionalSpectralDecomposer(nn.Module):
+    """
+    Spectral decomposer with *input-dependent* masks.
 
+    For each batch sample:
+      - Compute rFFT of x_raw to get X(f).
+      - Build magnitude spectrum |X(f)|.
+      - Pass |X(f)| through a small Conv1d network to get logits (B,K,F).
+      - Softmax over K at each frequency bin → masks (B,K,F).
+      - Apply masks to X(f) to get K mode spectra, then iFFT.
 
-class SpectralDecomposer(nn.Module):
-    def __init__(self, K: int, signal_len: int):
+    This is much closer in spirit to VMD: the decomposition
+    can adapt to each series instead of being globally fixed.
+    """
+    def __init__(self, K: int, signal_len: int, hidden_channels: int = 16):
         super().__init__()
         self.K = K
         self.L = signal_len
         self.F = signal_len // 2 + 1
 
-        # logits for masks: (K, F)
-        self.logits = nn.Parameter(torch.zeros(K, self.F))
+        # small Conv1d over frequency, mapping 1 → hidden → K channels
+        self.net = nn.Sequential(
+            nn.Conv1d(1, hidden_channels, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv1d(hidden_channels, K, kernel_size=3, padding=1),
+        )
+
+        # buffer to hold last masks for regularizers
+        self._last_masks = None
 
     def forward(self, x: torch.Tensor):
+        """
+        x: (B,1,L)
+        returns:
+            imfs_lin:  (B,K,L)
+            recon_lin: (B,1,L)
+        """
         B, C, L = x.shape
         assert C == 1, f"Expected 1 channel, got {C}"
         assert L == self.L, f"Expected signal_len={self.L}, got {L}"
 
-        # rFFT along time dimension
-        Xf = torch.fft.rfft(x, dim=-1)    # (B, 1, F), complex
+        # rFFT along time
+        Xf = torch.fft.rfft(x, dim=-1)        # (B,1,F), complex
 
-        # masks: (K, F), softmax over K
-        masks = F.softmax(self.logits, dim=0)  # (K, F)
-        masks_exp = masks.unsqueeze(0).expand(B, -1, -1)   # (B, K, F)
+        # magnitude spectrum as conditioning input
+        mag = Xf.abs()                        # (B,1,F), real
 
-        # broadcast Xf to (B, K, F)
-        Xf_exp = Xf.expand(-1, self.K, -1)                  # (B, K, F)
-        Xf_modes = Xf_exp * masks_exp.to(Xf.dtype)          # (B, K, F), complex
+        # produce logits (B,K,F)
+        logits = self.net(mag)                # (B,K,F)
 
-        # inverse FFT
-        imfs_lin = torch.fft.irfft(Xf_modes, n=self.L, dim=-1)  # (B, K, L), real
+        # masks: softmax over modes at each frequency bin
+        masks = F.softmax(logits, dim=1)      # (B,K,F)
+
+        # store for regularizers
+        self._last_masks = masks
+
+        # broadcast Xf to (B,K,F)
+        Xf_exp = Xf.expand(-1, self.K, -1)    # (B,K,F)
+        Xf_modes = Xf_exp * masks.to(Xf.dtype)  # complex
+
+        # inverse FFT → time-domain IMFs
+        imfs_lin = torch.fft.irfft(Xf_modes, n=self.L, dim=-1)  # (B,K,L)
 
         # reconstruction
-        recon_lin = imfs_lin.sum(dim=1, keepdim=True)           # (B, 1, L)
+        recon_lin = imfs_lin.sum(dim=1, keepdim=True)           # (B,1,L)
 
         return imfs_lin, recon_lin
 
     def spectral_smoothness_loss(self):
-        masks = F.softmax(self.logits, dim=0)  # (K, F)
-        diff = masks[:, 1:] - masks[:, :-1]    # (K, F-1)
+        """
+        Encourage each mode's mask to be smooth across frequency.
+
+        We use the *batch-averaged mask* for stability.
+        """
+        if self._last_masks is None:
+            return torch.tensor(0.0, device=next(self.parameters()).device)
+
+        # (B,K,F) → (K,F)
+        masks = self._last_masks.mean(dim=0)       # (K,F)
+        diff = masks[:, 1:] - masks[:, :-1]        # (K,F-1)
         return (diff ** 2).mean()
-        
+
     def orthogonality_loss(self):
-        masks = F.softmax(self.logits, dim=0)  # (K, F)
+        """
+        Encourage different modes' masks to be as decorrelated as possible
+        in frequency space (low cosine similarity between modes).
+
+        Also uses batch-averaged masks to reduce variance.
+        """
+        if self._last_masks is None:
+            return torch.tensor(0.0, device=next(self.parameters()).device)
+
+        masks = self._last_masks.mean(dim=0)      # (K,F)
         K, Ffreq = masks.shape
+
         loss = 0.0
         cnt = 0
         for i in range(K):
             mi = masks[i]
-            for j in range(i+1, K):
+            for j in range(i + 1, K):
                 mj = masks[j]
                 num = (mi * mj).sum()
                 den = mi.norm() * mj.norm() + 1e-8
                 loss = loss + (num / den)
                 cnt += 1
+
         if cnt > 0:
             loss = loss / cnt
         return loss
+
 
 
 
@@ -162,17 +215,12 @@ class ModewiseRefiner(nn.Module):
         y = self.conv2(y)
         return x + y   # residual refinement
 
-
-# ============================================================
-#                Hybrid Spectral + CNN Decomposer
-# ============================================================
-
 class HybridSpectralNVMD(nn.Module):
     """
     Full hybrid decomposer:
 
-      - SpectralDecomposer produces linear IMFs (frequency-partitioned).
-      - ModewiseRefiner refines each mode with small depthwise CNN.
+      - ConditionalSpectralDecomposer produces *input-dependent* linear IMFs.
+      - ModewiseRefiner refines each mode with depthwise CNN.
       - Sum over refined IMFs reconstructs RRP.
 
     Forward:
@@ -182,19 +230,36 @@ class HybridSpectralNVMD(nn.Module):
       imfs_lin:     (B,K,L)
       recon_lin:    (B,1,L)
     """
-    def __init__(self, K: int = 13, signal_len: int = 64):
+    def __init__(
+        self,
+        K: int = 13,
+        signal_len: int = 64,
+        hidden_channels: int = 16,
+        refiner_kernel_size: int = 3,
+    ):
         super().__init__()
         self.K = K
         self.L = signal_len
 
-        self.spectral = SpectralDecomposer(K=K, signal_len=signal_len)
-        self.refiner  = ModewiseRefiner(K=K)
+        # input-dependent spectral decomposition
+        self.spectral = ConditionalSpectralDecomposer(
+            K=K,
+            signal_len=signal_len,
+            hidden_channels=hidden_channels,
+        )
+
+        # same depthwise refiner as before
+        self.refiner = ModewiseRefiner(
+            K=K,
+            kernel_size=refiner_kernel_size,
+        )
 
     def forward(self, x_raw: torch.Tensor):
-        imfs_lin, recon_lin = self.spectral(x_raw)               # (B,K,L), (B,1,L)
-        imfs_refined = self.refiner(imfs_lin)                    # (B,K,L)
-        recon_refined = imfs_refined.sum(dim=1, keepdim=True)    # (B,1,L)
+        imfs_lin, recon_lin = self.spectral(x_raw)             # (B,K,L), (B,1,L)
+        imfs_refined = self.refiner(imfs_lin)                  # (B,K,L)
+        recon_refined = imfs_refined.sum(dim=1, keepdim=True)  # (B,1,L)
         return imfs_refined, recon_refined, imfs_lin, recon_lin
+
 
 def train_epoch(
     model: HybridSpectralNVMD,
