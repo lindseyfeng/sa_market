@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Train a new Transformer predictor on top of a pretrained HybridSpectralNVMD decomposer.
+Train a Transformer predictor on top of a pretrained HybridSpectralNVMD decomposer.
 
-- Input: raw RRP sequence windows (length L)
-- Decomposer: pretrained HybridSpectralNVMD → IMFs (B, K, L)
-- Predictor: new MultiModeTransformerRRP trained on IMFs to predict next-step RRP
+Two-stage training:
+  1) Warmup: freeze decomposer, train predictor only for `warmup_epochs`.
+  2) Joint:  train decomposer + predictor jointly for `joint_epochs`.
 
 Usage example:
 
     python train_transformer_freeze_nvmd.py \
         --train-csv VMD_modes_with_residual_2018_2021.csv \
-        --val-csv   VMD_modes_with_residual_2021_2022.csv \
+        --val-csv   VMD_modes_with_residual_2021_2021.csv \
         --decomposer-ckpt hybrid_spectral_nvmd.pt \
         --seq-len 64 \
-        --epochs 200 \
+        --warmup-epochs 20 \
+        --joint-epochs 100 \
         --out nvmd_transformer_rrp.pt
 """
 
@@ -42,8 +43,6 @@ class RRPWindowDataset(Dataset):
 
       x_raw:    (1, L)  window of raw RRP values [t, ..., t+L-1]
       rrp_next: (1,)    RRP at time t+L
-
-    The decomposer will turn x_raw into IMFs inside the training loop.
     """
     def __init__(self, df: pd.DataFrame, seq_len: int = 64, rrp_col: str = "RRP"):
         super().__init__()
@@ -103,10 +102,11 @@ def run_epoch(
 
     if freeze_decomposer:
         decomposer.eval()
-        # Just to be safe:
         for p in decomposer.parameters():
             p.requires_grad = False
     else:
+        for p in decomposer.parameters():
+            p.requires_grad = True
         decomposer.train(is_train)
 
     predictor.train(is_train)
@@ -116,20 +116,23 @@ def run_epoch(
     n_samples = 0
 
     for x_raw, rrp_next in loader:
-        x_raw   = x_raw.to(device)      # (B,1,L)
-        rrp_next = rrp_next.to(device)  # (B,1)
+        x_raw    = x_raw.to(device)      # (B,1,L)
+        rrp_next = rrp_next.to(device)   # (B,1)
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
         # ---- Forward through NVMD decomposer ----
-        # imfs_ref: (B,K,L)
-        with torch.no_grad() if freeze_decomposer else torch.enable_grad():
-            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)
+        if not is_train:
+            ctx = torch.no_grad()
+        else:
+            ctx = torch.no_grad() if freeze_decomposer else torch.enable_grad()
 
-        # If decomposer is frozen, stop grads into it explicitly:
+        with ctx:
+            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)  # (B,K,L), ...
+
         if freeze_decomposer:
-            imfs_ref = imfs_ref.detach()
+            imfs_ref = imfs_ref.detach()  # extra safety
 
         # ---- Forward through Transformer predictor ----
         rrp_next_hat = predictor(imfs_ref)   # (B,1)
@@ -138,7 +141,8 @@ def run_epoch(
         mae = F.l1_loss(rrp_next_hat, rrp_next)
 
         if is_train:
-            mae.backward()
+            # use MSE as training loss
+            mse.backward()
             torch.nn.utils.clip_grad_norm_(predictor.parameters(), max_grad_norm)
             optimizer.step()
 
@@ -179,8 +183,6 @@ def main():
     # NVMD decomposer
     ap.add_argument("--K", type=int, default=13, help="Number of modes produced by NVMD")
     ap.add_argument("--decomposer-ckpt", type=str, default="./hybrid_spectral_nvmd.pt")
-    ap.add_argument("--freeze-decomposer", action="store_true",
-                    help="Freeze NVMD weights (recommended).")
 
     # Transformer predictor hyperparams
     ap.add_argument("--d-model",    type=int, default=128)
@@ -191,7 +193,10 @@ def main():
 
     # Training
     ap.add_argument("--batch",          type=int,   default=256)
-    ap.add_argument("--epochs",         type=int,   default=50)
+    ap.add_argument("--warmup-epochs",  type:int,   default=20,
+                    help="Epochs with decomposer frozen (predictor only).")
+    ap.add_argument("--joint-epochs",   type:int,   default=30,
+                    help="Epochs of joint training (decomposer + predictor).")
     ap.add_argument("--lr",             type=float, default=1e-4)
     ap.add_argument("--weight-decay",   type=float, default=1e-2)
     ap.add_argument("--seed",           type=int,   default=42)
@@ -267,25 +272,27 @@ def main():
         dropout=args.dropout,
     ).to(device)
 
-    optimizer = torch.optim.AdamW(
+    best_val_mae = float("inf")
+
+    # -----------------------------
+    #  Stage 1: warmup (frozen decomposer)
+    # -----------------------------
+    print("\n===== Stage 1: Warmup (freeze decomposer, train predictor only) =====\n")
+
+    opt_pred = torch.optim.AdamW(
         predictor.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
 
-    best_val_mae = float("inf")
-
-    # -----------------------------
-    #  Training loop
-    # -----------------------------
-    for ep in range(1, args.epochs + 1):
+    for ep in range(1, args.warmup_epochs + 1):
         tr_mse, tr_mae = run_epoch(
             decomposer,
             predictor,
             tr_dl,
             device,
-            optimizer=optimizer,
-            freeze_decomposer=args.freeze_decomposer,
+            optimizer=opt_pred,
+            freeze_decomposer=True,
             max_grad_norm=args.max_grad_norm,
         )
 
@@ -295,12 +302,12 @@ def main():
             va_dl,
             device,
             optimizer=None,
-            freeze_decomposer=args.freeze_decomposer,
+            freeze_decomposer=True,
             max_grad_norm=args.max_grad_norm,
         )
 
         print(
-            f"[Epoch {ep:03d}] "
+            f"[Warmup {ep:03d}] "
             f"train MSE={tr_mse:.4f} MAE={tr_mae:.4f} | "
             f"val MSE={va_mse:.4f} MAE={va_mae:.4f}"
         )
@@ -309,18 +316,71 @@ def main():
             best_val_mae = va_mae
             torch.save(
                 {
+                    "stage": "warmup",
                     "epoch": ep,
                     "val_mae": best_val_mae,
                     "predictor_state": predictor.state_dict(),
-                    "decomposer_ckpt": args.decomposer_ckpt,
+                    "decomposer_state": decomposer.state_dict(),
                     "args": vars(args),
-                    "notes": "Transformer trained on NVMD IMFs (frozen decomposer)"
-                             if args.freeze_decomposer
-                             else "Transformer trained on NVMD IMFs (joint gradients)",
+                    "notes": "Warmup: predictor on frozen NVMD IMFs",
                 },
                 args.out,
             )
-            print(f"  → Saved new best checkpoint with val MAE={best_val_mae:.4f} to {args.out}")
+            print(f"  → Saved new best checkpoint (warmup) with val MAE={best_val_mae:.4f} to {args.out}")
+
+    # -----------------------------
+    #  Stage 2: joint training
+    # -----------------------------
+    print("\n===== Stage 2: Joint training (decomposer + predictor) =====\n")
+
+    opt_joint = torch.optim.AdamW(
+        list(decomposer.parameters()) + list(predictor.parameters()),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+
+    for ep in range(1, args.joint_epochs + 1):
+        tr_mse, tr_mae = run_epoch(
+            decomposer,
+            predictor,
+            tr_dl,
+            device,
+            optimizer=opt_joint,
+            freeze_decomposer=False,
+            max_grad_norm=args.max_grad_norm,
+        )
+
+        va_mse, va_mae = run_epoch(
+            decomposer,
+            predictor,
+            va_dl,
+            device,
+            optimizer=None,
+            freeze_decomposer=False,
+            max_grad_norm=args.max_grad_norm,
+        )
+
+        print(
+            f"[Joint {ep:03d}] "
+            f"train MSE={tr_mse:.4f} MAE={tr_mae:.4f} | "
+            f"val MSE={va_mse:.4f} MAE={va_mae:.4f}"
+        )
+
+        if va_mae < best_val_mae:
+            best_val_mae = va_mae
+            torch.save(
+                {
+                    "stage": "joint",
+                    "epoch": ep,
+                    "val_mae": best_val_mae,
+                    "predictor_state": predictor.state_dict(),
+                    "decomposer_state": decomposer.state_dict(),
+                    "args": vars(args),
+                    "notes": "Joint: predictor + decomposer trained on prediction MSE",
+                },
+                args.out,
+            )
+            print(f"  → Saved new best checkpoint (joint) with val MAE={best_val_mae:.4f} to {args.out}")
 
 
 if __name__ == "__main__":
