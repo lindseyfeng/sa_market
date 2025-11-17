@@ -39,36 +39,47 @@ class VMD13IMFNextDataset(Dataset):
 # ============================================================
 def train_decomposer_only(
     decomposer, predictor, loader, opt, device,
-    w_imf, w_rrp, w_smooth, w_ortho,
+    w_pred, w_rrp, w_smooth, w_ortho,
 ):
     """
-    Stage 1: freeze predictor, train decomposer to match IMFs, reconstruct RRP,
-    and satisfy spectral regularizers.
+    Stage 1: freeze predictor params, train decomposer so that:
+      - its reconstruction matches x_raw (L1),
+      - its modes, when fed to predictor, minimize RRP MSE,
+      - spectral regularizers (smoothness / orthogonality) are satisfied.
     """
     decomposer.train()
     predictor.eval()
+
+    # freeze predictor parameters, but still allow gradients to flow
+    # back through its *inputs* (imfs_ref → decomposer)
     for p in predictor.parameters():
         p.requires_grad = False
 
     tot_loss = 0.0
     n = 0
 
-    for x_raw, imfs_true, _ in loader:
+    for x_raw, imfs_true, rrp_next in loader:
         x_raw = x_raw.to(device)
-        imfs_true = imfs_true.to(device)
+        rrp_next = rrp_next.to(device)
 
         opt.zero_grad()
 
+        # forward through decomposer
         imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)
 
-        # IMF supervision + reconstruction + spectral regularizers
+        # forward through predictor (no no_grad here!)
+        rrp_hat = predictor(imfs_ref)
 
+        # prediction MSE on next-step RRP
+        loss_pred = F.mse_loss(rrp_hat, rrp_next)
+
+        # reconstruction + spectral regularizers
         loss_rrp = F.l1_loss(recon_ref, x_raw)
-
         loss_smooth = decomposer.spectral.spectral_smoothness_loss()
         loss_ortho = decomposer.spectral.orthogonality_loss()
 
         loss = (
+            w_pred * loss_pred
           + w_rrp * loss_rrp
           + w_smooth * loss_smooth
           + w_ortho * loss_ortho
@@ -83,6 +94,7 @@ def train_decomposer_only(
         n += bs
 
     return tot_loss / n
+
 
 
 def train_predictor_only(decomposer, predictor, loader, opt, device):
@@ -275,7 +287,7 @@ def main():
     for ep in range(1, args.decomp_epochs + 1):
         tr_loss = train_decomposer_only(
             decomposer, predictor, tr_dl, opt_dec, device,
-            args.w_imf, args.w_rrp, args.w_smooth, args.w_ortho
+            args.w_pred, args.w_rrp, args.w_smooth, args.w_ortho
         )
         va_mse, va_mae = eval_all(decomposer, predictor, va_dl, device)
         print(
