@@ -9,6 +9,10 @@ from torch.utils.data import Dataset, DataLoader
 from train_nvmd import HybridSpectralNVMD
 from train_transformer import MultiModeTransformerRRP
 
+
+# ============================================================
+# Dataset: returns  (x_raw, imfs_true, rrp_next)
+# ============================================================
 class VMD13IMFNextDataset(Dataset):
     def __init__(self, df, seq_len=64, rrp_col="RRP", K=13):
         self.L = seq_len
@@ -22,6 +26,9 @@ class VMD13IMFNextDataset(Dataset):
         self.imfs = torch.tensor(imfs).T          # (K, T)
         T = len(rrp)
         self.N = T - seq_len - 1
+
+        if self.N <= 0:
+            raise ValueError(f"Not enough samples for seq_len={seq_len}, T={T}")
 
     def __len__(self):
         return self.N
@@ -39,19 +46,21 @@ class VMD13IMFNextDataset(Dataset):
 # ============================================================
 def train_decomposer_only(
     decomposer, predictor, loader, opt, device,
-    w_pred, w_rrp, w_smooth, w_ortho,
+    w_pred, w_imf, w_rrp, w_smooth, w_ortho,
 ):
     """
-    Stage 1: freeze predictor params, train decomposer so that:
-      - its reconstruction matches x_raw (L1),
-      - its modes, when fed to predictor, minimize RRP MSE,
-      - spectral regularizers (smoothness / orthogonality) are satisfied.
+    Stage 1:
+      - Freeze predictor params.
+      - Update decomposer so that:
+        * its modes fed into predictor minimize RRP MSE (main driver),
+        * recon_ref matches x_raw,
+        * spectral regularizers are satisfied,
+        * optionally match true IMFs if w_imf > 0.
     """
     decomposer.train()
     predictor.eval()
 
-    # freeze predictor parameters, but still allow gradients to flow
-    # back through its *inputs* (imfs_ref → decomposer)
+    # freeze predictor parameters, but still use it in forward
     for p in predictor.parameters():
         p.requires_grad = False
 
@@ -60,6 +69,7 @@ def train_decomposer_only(
 
     for x_raw, imfs_true, rrp_next in loader:
         x_raw = x_raw.to(device)
+        imfs_true = imfs_true.to(device)
         rrp_next = rrp_next.to(device)
 
         opt.zero_grad()
@@ -67,11 +77,15 @@ def train_decomposer_only(
         # forward through decomposer
         imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)
 
-        # forward through predictor (no no_grad here!)
+        # forward through predictor (no torch.no_grad!)
+        # gradients will flow into decomposer via imfs_ref
         rrp_hat = predictor(imfs_ref)
 
-        # prediction MSE on next-step RRP
+        # prediction loss on next-step RRP
         loss_pred = F.mse_loss(rrp_hat, rrp_next)
+
+        # optional IMF supervision (you can set w_imf=0 if you don't want this)
+        loss_imf = F.mse_loss(imfs_ref, imfs_true)
 
         # reconstruction + spectral regularizers
         loss_rrp = F.l1_loss(recon_ref, x_raw)
@@ -79,10 +93,11 @@ def train_decomposer_only(
         loss_ortho = decomposer.spectral.orthogonality_loss()
 
         loss = (
-            w_pred * loss_pred
-          + w_rrp * loss_rrp
-          + w_smooth * loss_smooth
-          + w_ortho * loss_ortho
+            w_pred   * loss_pred +
+            w_imf    * loss_imf  +
+            w_rrp    * loss_rrp  +
+            w_smooth * loss_smooth +
+            w_ortho  * loss_ortho
         )
 
         loss.backward()
@@ -96,13 +111,13 @@ def train_decomposer_only(
     return tot_loss / n
 
 
-
 def train_predictor_only(decomposer, predictor, loader, opt, device):
     """
     Stage 2: freeze decomposer, train predictor on top of decomposed modes.
     """
     decomposer.eval()
     predictor.train()
+
     for p in decomposer.parameters():
         p.requires_grad = False
     for p in predictor.parameters():
@@ -112,7 +127,8 @@ def train_predictor_only(decomposer, predictor, loader, opt, device):
     n = 0
 
     for x_raw, _, rrp_next in loader:
-        x_raw, rrp_next = x_raw.to(device), rrp_next.to(device)
+        x_raw = x_raw.to(device)
+        rrp_next = rrp_next.to(device)
 
         opt.zero_grad()
 
@@ -120,8 +136,8 @@ def train_predictor_only(decomposer, predictor, loader, opt, device):
             imfs_ref, _, _, _ = decomposer(x_raw)
 
         rrp_hat = predictor(imfs_ref)
-
         loss = F.mse_loss(rrp_hat, rrp_next)
+
         loss.backward()
         nn.utils.clip_grad_norm_(predictor.parameters(), 10.0)
         opt.step()
@@ -142,6 +158,7 @@ def train_joint(
     """
     decomposer.train()
     predictor.train()
+
     for p in decomposer.parameters():
         p.requires_grad = True
     for p in predictor.parameters():
@@ -157,32 +174,30 @@ def train_joint(
 
         opt.zero_grad()
 
-        # Decomposer forward
+        # decomposer
         imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)
-
-        # Predictor forward
+        # predictor
         rrp_hat = predictor(imfs_ref)
 
-        # Prediction loss
+        # prediction + decomp losses
         loss_pred = F.mse_loss(rrp_hat, rrp_next)
-
-        # Decomposition losses
         loss_imf = F.mse_loss(imfs_ref, imfs_true)
         loss_rrp = F.l1_loss(recon_ref, x_raw)
         loss_smooth = decomposer.spectral.spectral_smoothness_loss()
         loss_ortho = decomposer.spectral.orthogonality_loss()
 
         loss = (
-            w_pred * loss_pred
-          + w_imf * loss_imf
-          + w_rrp * loss_rrp
-          + w_smooth * loss_smooth
-          + w_ortho * loss_ortho
+            w_pred   * loss_pred +
+            w_imf    * loss_imf  +
+            w_rrp    * loss_rrp  +
+            w_smooth * loss_smooth +
+            w_ortho  * loss_ortho
         )
 
         loss.backward()
         nn.utils.clip_grad_norm_(
-            list(decomposer.parameters()) + list(predictor.parameters()), 10.0
+            list(decomposer.parameters()) + list(predictor.parameters()),
+            10.0,
         )
         opt.step()
 
@@ -225,16 +240,14 @@ def eval_all(decomposer, predictor, loader, device):
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--train-csv", type=str,
-                    default="VMD_modes_with_residual_2018_2021.csv")
-    ap.add_argument("--val-csv", type=str,
-                    default="VMD_modes_with_residual_2021_2022.csv")
+    ap.add_argument("--train-csv", type=str, required=True)
+    ap.add_argument("--val-csv", type=str, required=True)
 
     ap.add_argument("--seq-len", type=int, default=256)
     ap.add_argument("--K", type=int, default=13)
 
-    ap.add_argument("--decomposer-ckpt", type=str, default="./hybrid_spectral_nvmd.pt")
-    ap.add_argument("--predictor-ckpt", type=str,  default="./transformer_only_rrp.pt")
+    ap.add_argument("--decomposer-ckpt", type=str, required=True)
+    ap.add_argument("--predictor-ckpt", type=str, required=True)
 
     # training stages
     ap.add_argument("--decomp-epochs", type=int, default=20)
@@ -242,7 +255,7 @@ def main():
     ap.add_argument("--joint-epochs", type=int, default=20)
     ap.add_argument("--lr", type=float, default=1e-4)
 
-    # joint & decomp loss weights
+    # loss weights
     ap.add_argument("--w-pred", type=float, default=1.0)
     ap.add_argument("--w-imf", type=float, default=1.0)
     ap.add_argument("--w-rrp", type=float, default=0.1)
@@ -259,11 +272,11 @@ def main():
     df_va = pd.read_csv(args.val_csv)
     tr_dl = DataLoader(
         VMD13IMFNextDataset(df_tr, seq_len=args.seq_len, K=args.K),
-        batch_size=256, shuffle=True, drop_last=True
+        batch_size=256, shuffle=True, drop_last=True,
     )
     va_dl = DataLoader(
         VMD13IMFNextDataset(df_va, seq_len=args.seq_len, K=args.K),
-        batch_size=256, shuffle=False
+        batch_size=256, shuffle=False,
     )
 
     # ==== load models ====
@@ -287,7 +300,7 @@ def main():
     for ep in range(1, args.decomp_epochs + 1):
         tr_loss = train_decomposer_only(
             decomposer, predictor, tr_dl, opt_dec, device,
-            args.w_pred, args.w_rrp, args.w_smooth, args.w_ortho
+            args.w_pred, args.w_imf, args.w_rrp, args.w_smooth, args.w_ortho,
         )
         va_mse, va_mae = eval_all(decomposer, predictor, va_dl, device)
         print(
@@ -306,7 +319,9 @@ def main():
     opt_pred = torch.optim.Adam(predictor.parameters(), lr=args.lr)
 
     for ep in range(1, args.pred_epochs + 1):
-        tr_pred = train_predictor_only(decomposer, predictor, tr_dl, opt_pred, device)
+        tr_pred = train_predictor_only(
+            decomposer, predictor, tr_dl, opt_pred, device
+        )
         va_mse, va_mae = eval_all(decomposer, predictor, va_dl, device)
         print(
             f"[Predictor {ep:03d}] "
@@ -325,7 +340,7 @@ def main():
 
     opt_joint = torch.optim.Adam(
         list(decomposer.parameters()) + list(predictor.parameters()),
-        lr=args.lr
+        lr=args.lr,
     )
 
     best_mae = float("inf")
@@ -333,7 +348,7 @@ def main():
     for ep in range(1, args.joint_epochs + 1):
         tr_pred = train_joint(
             decomposer, predictor, tr_dl, opt_joint, device,
-            args.w_pred, args.w_imf, args.w_rrp, args.w_smooth, args.w_ortho
+            args.w_pred, args.w_imf, args.w_rrp, args.w_smooth, args.w_ortho,
         )
         va_mse, va_mae = eval_all(decomposer, predictor, va_dl, device)
         print(
@@ -341,7 +356,6 @@ def main():
             f"| val MSE={va_mse:.4f} MAE={va_mae:.4f}"
         )
 
-        # save best on validation MAE
         if va_mae < best_mae:
             best_mae = va_mae
             ckpt = {
