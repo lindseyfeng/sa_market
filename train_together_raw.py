@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from train_nvmd import HybridSpectralNVMD
-from train_transformer import ModeTime2DTransformerRRP  # or MultiModeTransformerRRP
+from train_transformer import MultiModeTransformerRRP
 
 
 # ============================================================
@@ -258,7 +258,7 @@ def main():
         signal_len=args.seq_len,
     ).to(device)
 
-    predictor = ModeTime2DTransformerRRP(
+    predictor = MultiModeTransformerRRP(
         K=args.K,
         seq_len=args.seq_len,
         d_model=args.d_model,
