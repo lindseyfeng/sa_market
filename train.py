@@ -6,8 +6,8 @@ Usage example:
         --train-csv VMD_modes_with_residual_2018_2021.csv \
         --val-csv   VMD_modes_with_residual_2021_2022.csv \
         --seq-len 256 \
-        --warmup-epochs 20 \
-        --joint-epochs 100 \
+        --warmup_epochs 20 \
+        --joint_epochs 100 \
         --out nvmd_transformer_joint.pt
 """
 
