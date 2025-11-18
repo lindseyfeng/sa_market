@@ -27,7 +27,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from train_nvmd import HybridSpectralNVMD
 from train_transformer import MultiModeTransformerRRP
-from nvmd_transformer import NVMDTransformerPredictor
+from nvmd_transformer import EnhancedNVMDTransformer
 
 
 # ============================================================
@@ -321,16 +321,16 @@ def main():
     # -----------------------------
     #  New Transformer predictor (from scratch)
     # -----------------------------
-    predictor = NVMDTransformerPredictor(
+    predictor = EnhancedNVMDTransformer(
         decomposer=decomposer,
-        d_model=args.d_model,
-        n_heads=args.n_heads,
-        num_layers=args.num_layers,
-        dim_ff=args.dim_ff,
-        dropout=args.dropout,
-        last_k=16,                 # or 16 if you prefer shorter tail
-        use_spectral_priors=True,  # or False to test "IMF-only" baseline
+        d_model=128,
+        n_heads=4,
+        num_layers=3,
+        dim_ff=256,
+        dropout=0.1,
+        use_multi_scale=True,
     ).to(device)
+
 
     best_val_mae = float("inf")
 
