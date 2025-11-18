@@ -1,258 +1,263 @@
+#!/usr/bin/env python3
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-class IMFRepresentation(nn.Module):
+class PositionalEncoding(nn.Module):
     """
-    Rich per-mode representation for imfs_ref:
+    Standard sinusoidal positional encoding for batch_first inputs.
 
-      Input:  imfs_ref (B, K, L)
-      Output: mode_feats (B, K, d_model)
-
-    For each mode k, we compute:
-      - Conv-based embedding over the tail (last_k steps)
-      - Tail statistics: mean, std, slope, last value
-      - Relative energy share across modes
-
-    Then combine into a d_model-dim vector.
+    Expects x of shape (B, L, d_model) and adds a fixed positional bias
+    before dropout.
     """
-    def __init__(self, K, L, d_model: int, last_k: int = 32):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
-        self.K = K
-        self.L = L
-        self.d_model = d_model
-        self.last_k = min(last_k, L)
+        self.dropout = nn.Dropout(p=dropout)
 
-        # 1) Temporal conv encoder over tail
-        # We apply the same conv to every (sample, mode) signal.
-        self.temporal = nn.Sequential(
-            nn.Conv1d(
-                in_channels=1,
-                out_channels=d_model,
-                kernel_size=5,
-                padding=2,
-            ),
-            nn.GELU(),
-            nn.Conv1d(
-                in_channels=d_model,
-                out_channels=d_model,
-                kernel_size=5,
-                padding=2,
-            ),
-            nn.GELU(),
+        pe = torch.zeros(max_len, d_model)                # (max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # (max_len, 1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
         )
+        pe[:, 0::2] = torch.sin(position * div_term)      # even dims
+        pe[:, 1::2] = torch.cos(position * div_term)      # odd dims
 
-        # 2) MLP to embed scalar stats into d_model and fuse with conv features
-        # Stats per mode: mean, std, slope, last_value, relative_energy → 5 scalars
-        stats_dim = 5
-        hidden = max(d_model // 2, 16)
-        self.stats_mlp = nn.Sequential(
-            nn.Linear(stats_dim, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, d_model),
-        )
+        # store as (1, max_len, d_model) for easy broadcasting to (B, L, d_model)
+        pe = pe.unsqueeze(0)
+        self.register_buffer("pe", pe)
 
-        # 3) Final fusion + nonlinearity
-        self.fusion = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.GELU(),
-        )
-
-    def forward(self, imfs_ref: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        imfs_ref: (B, K, L)
-        returns:  (B, K, d_model)
+        x: (B, L, d_model)
         """
-        B, K, L = imfs_ref.shape
-        assert K == self.K, f"Expected K={self.K}, got {K}"
-        assert L == self.L, f"Expected L={self.L}, got {L}"
+        L = x.size(1)
+        x = x + self.pe[:, :L, :]  # (1, L, d_model) -> broadcast
+        return self.dropout(x)
 
-        device = imfs_ref.device
 
-        # ----------------------------
-        # 1) Conv embedding over tail
-        # ----------------------------
-        # (B, K, L) -> (B*K, 1, L)
-        x = imfs_ref.reshape(B * K, 1, L)
-        x = self.temporal(x)                         # (B*K, d_model, L)
-
-        # keep only last_k timesteps
-        if self.last_k < L:
-            x_tail = x[:, :, -self.last_k:]         # (B*K, d_model, last_k)
-        else:
-            x_tail = x                               # (B*K, d_model, L)
-
-        # average over tail timesteps
-        conv_emb = x_tail.mean(dim=-1)               # (B*K, d_model)
-        conv_emb = conv_emb.view(B, K, self.d_model) # (B, K, d_model)
-
-        # ----------------------------
-        # 2) Tail statistics per mode
-        # ----------------------------
-        if self.last_k < L:
-            tail = imfs_ref[:, :, -self.last_k:]     # (B, K, last_k)
-        else:
-            tail = imfs_ref                          # (B, K, L)
-
-        # mean, std over tail
-        tail_mean = tail.mean(dim=-1)                # (B, K)
-        tail_std  = tail.std(dim=-1)                 # (B, K)
-
-        # slope ≈ last - first over tail (simple trend proxy)
-        first_tail = tail[..., 0]                    # (B, K)
-        last_tail  = tail[..., -1]                   # (B, K)
-        slope = (last_tail - first_tail) / (self.last_k + 1e-8)
-
-        # last value directly
-        last_val = last_tail                         # (B, K)
-
-        # relative energy: ||mode_k||^2 / sum_j ||mode_j||^2
-        # compute on tail to match the horizon
-        energy_per_mode = (tail ** 2).sum(dim=-1)    # (B, K)
-        energy_sum = energy_per_mode.sum(dim=-1, keepdim=True) + 1e-8  # (B,1)
-        rel_energy = energy_per_mode / energy_sum    # (B, K)
-
-        # stack stats: (B, K, 5)
-        stats = torch.stack(
-            [tail_mean, tail_std, slope, last_val, rel_energy],
-            dim=-1,
-        )                                            # (B, K, 5)
-
-        # feed stats through MLP to get d_model-dim
-        stats_emb = self.stats_mlp(stats)            # (B, K, d_model)
-
-        # ----------------------------
-        # 3) Fuse conv embedding + stats embedding
-        # ----------------------------
-        mode_feats = conv_emb + stats_emb            # (B, K, d_model)
-        mode_feats = self.fusion(mode_feats)         # (B, K, d_model)
-
-        return mode_feats
-
-class NVMDTransformerPredictor(nn.Module):
+class EnhancedNVMDTransformer(nn.Module):
     """
-    NVMD-aware predictor with richer IMF representation.
+    Enhanced NVMD-aware predictor:
 
-      - Input:  imfs_ref (B, K, L) from HybridSpectralNVMD
-      - Step 1: IMFRepresentation -> (B, K, d_model)
-      - Step 2: Add spectral priors as per-mode bias (optional but recommended)
-      - Step 3: Transformer over K mode tokens
-      - Step 4: Pool over modes -> scalar prediction (RRP_next)
+      Input:
+        x_raw: (B, 1, L)  raw RRP window
+
+      Inside:
+        - NVMD decomposer produces:
+            imfs:  (B, K, L)
+            recon: (B, 1, L)
+        - Multi-scale feature extraction:
+            raw_features:   Conv1d over x_raw
+            imf_features:   depthwise + pointwise Conv1d over imfs
+            recon_features: Conv1d over recon
+          -> concatenated to (B, d_model, L)
+        - Transformer encoder over time (L tokens, d_model each)
+        - Multihead attention pooling over time
+        - Main head:       predict next-step RRP
+        - Aux heads:       predict trend / seasonality (optional targets)
+
+      Output:
+        main_pred:      (B, 1)
+        trend_pred:     (B, 1)
+        seasonality_pred:(B, 1)
+        attn_weights:   (B, 1, L) attention weights over time
     """
     def __init__(
         self,
-        decomposer,          # HybridSpectralNVMD instance
+        decomposer,             # HybridSpectralNVMD instance
         d_model: int = 128,
         n_heads: int = 4,
         num_layers: int = 3,
         dim_ff: int = 256,
         dropout: float = 0.1,
-        last_k: int = 32,
-        use_spectral_priors: bool = True,
+        use_multi_scale: bool = True,
     ):
         super().__init__()
         self.decomposer = decomposer
         self.K = decomposer.K
-        self.L = decomposer.L
-        self.F = decomposer.spectral.F
-        self.use_spectral_priors = use_spectral_priors
+        self.use_multi_scale = use_multi_scale
 
-        assert d_model % n_heads == 0, \
-            f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+        assert d_model % 4 == 0, "d_model must be divisible by 4 for the multi-scale channel split."
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads."
 
-        self.d_model = d_model
-
-        # 1) IMF representation
-        self.imf_repr = IMFRepresentation(
-            K=self.K,
-            L=self.L,
-            d_model=d_model,
-            last_k=last_k,
-        )
-
-        if use_spectral_priors:
-            # Masks: (K, F) -> (K, d_model)
-            self.freq_proj = nn.Linear(self.F, d_model)
-
-            # Center freq μ_k: (K,1) -> (K,d_model)
-            self.center_proj = nn.Sequential(
-                nn.Linear(1, d_model // 4),
-                nn.GELU(),
-                nn.Linear(d_model // 4, d_model),
+        # ------------------------------------------------
+        # Multi-scale feature extraction
+        # ------------------------------------------------
+        if use_multi_scale:
+            # raw:   1 channel  -> d_model/4
+            # imfs:  K channels -> d_model/2
+            # recon: 1 channel  -> d_model/4
+            self.raw_proj = nn.Conv1d(
+                in_channels=1,
+                out_channels=d_model // 4,
+                kernel_size=3,
+                padding=1,
             )
 
-            # Bandwidth σ_k: (K,1) -> (K,d_model)
-            self.bandwidth_proj = nn.Sequential(
-                nn.Linear(1, d_model // 4),
-                nn.GELU(),
-                nn.Linear(d_model // 4, d_model),
+            # IMF branch: depthwise (per-mode) then pointwise (mix modes)
+            self.imf_depthwise = nn.Conv1d(
+                in_channels=self.K,
+                out_channels=self.K,
+                kernel_size=3,
+                padding=1,
+                groups=self.K,         # each mode has its own filter
+            )
+            self.imf_pointwise = nn.Conv1d(
+                in_channels=self.K,
+                out_channels=d_model // 2,
+                kernel_size=1,
             )
 
-            # Optional per-mode index embedding
-            self.mode_index_embed = nn.Embedding(self.K, d_model)
+            self.recon_proj = nn.Conv1d(
+                in_channels=1,
+                out_channels=d_model // 4,
+                kernel_size=3,
+                padding=1,
+            )
+        else:
+            # Only IMFs, all mixed into a d_model-dimensional sequence
+            self.imf_proj = nn.Conv1d(
+                in_channels=self.K,
+                out_channels=d_model,
+                kernel_size=3,
+                padding=1,
+            )
 
-        # 2) Transformer over modes
+        # Normalize combined features before positional encoding
+        self.feature_norm = nn.LayerNorm(d_model)
+
+        # ------------------------------------------------
+        # Positional encoding + Transformer encoder (over time)
+        # ------------------------------------------------
+        self.pos_encoding = PositionalEncoding(d_model, dropout=dropout)
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
             dim_feedforward=dim_ff,
             dropout=dropout,
-            batch_first=True,
+            batch_first=True,  # (B, L, d_model)
         )
         self.transformer = nn.TransformerEncoder(
             encoder_layer,
             num_layers=num_layers,
         )
 
-        # 3) Output head
-        self.output_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model, d_model // 2),
-            nn.GELU(),
-            nn.Linear(d_model // 2, 1),
+        # ------------------------------------------------
+        # Multi-head attention pooling over time
+        # ------------------------------------------------
+        self.attention_pool = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True,  # query/key/value: (B, L, d_model)
         )
 
-    def forward(self, imfs_ref: torch.Tensor) -> torch.Tensor:
+        # ------------------------------------------------
+        # Output heads
+        # ------------------------------------------------
+        self.output_head = nn.Sequential(
+            nn.Linear(d_model, dim_ff),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_ff, dim_ff // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_ff // 2, 1),
+        )
+
+        # Optional auxiliary heads (only useful if you define targets)
+        self.trend_head = nn.Linear(d_model, 1)
+        self.seasonality_head = nn.Linear(d_model, 1)
+
+    def _multi_scale_features(self, x_raw: torch.Tensor, imfs: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
         """
-        imfs_ref: (B, K, L)
-        returns:  rrp_next_hat (B, 1)
+        Build (B, d_model, L) feature map from raw, imfs, recon.
         """
-        B, K, L = imfs_ref.shape
-        assert K == self.K and L == self.L, \
-            f"Expected (K={self.K}, L={self.L}), got (K={K}, L={L})"
+        if self.use_multi_scale:
+            # Raw branch
+            raw_features = self.raw_proj(x_raw)              # (B, d_model/4, L)
+            raw_features = F.gelu(raw_features)
 
-        device = imfs_ref.device
+            # IMF branch: per-mode temporal filtering, then mixing modes
+            imf_features = self.imf_depthwise(imfs)          # (B, K, L)
+            imf_features = F.gelu(imf_features)
+            imf_features = self.imf_pointwise(imf_features)  # (B, d_model/2, L)
+            imf_features = F.gelu(imf_features)
 
-        # 1) Rich IMF-based representation
-        mode_feats = self.imf_repr(imfs_ref)    # (B, K, d_model)
+            # Reconstruction branch
+            recon_features = self.recon_proj(recon)          # (B, d_model/4, L)
+            recon_features = F.gelu(recon_features)
 
-        # 2) Optional spectral priors as bias
-        if self.use_spectral_priors:
-            with torch.no_grad():
-                masks = self.decomposer.spectral.masks().to(device)      # (K, F)
-                center, bandwidth = self.decomposer.spectral.mask_stats()
-                center = center.to(device)
-                bandwidth = bandwidth.to(device)
+            # Concatenate along channel dimension
+            features = torch.cat(
+                [raw_features, imf_features, recon_features], dim=1
+            )                                                # (B, d_model, L)
+        else:
+            imf_features = self.imf_proj(imfs)               # (B, d_model, L)
+            features = F.gelu(imf_features)
 
-            freq_emb = self.freq_proj(masks)                              # (K,d_model)
-            center_emb = self.center_proj(center.unsqueeze(-1))           # (K,d_model)
-            bw_emb = self.bandwidth_proj(bandwidth.unsqueeze(-1))         # (K,d_model)
+        return features
 
-            mode_indices = torch.arange(self.K, device=device)
-            mode_idx_emb = self.mode_index_embed(mode_indices)            # (K,d_model)
+    def forward(self, x_raw: torch.Tensor):
+        """
+        x_raw: (B, 1, L)  raw RRP window
 
-            prior_emb = freq_emb + center_emb + bw_emb + mode_idx_emb     # (K,d_model)
-            prior_emb = prior_emb.unsqueeze(0).expand(B, -1, -1)          # (B,K,d_model)
+        Returns:
+          main_pred:       (B, 1)
+          trend_pred:      (B, 1)
+          seasonality_pred:(B, 1)
+          attn_weights:    (B, 1, L)
+        """
+        B, C, L = x_raw.shape
+        assert C == 1, f"Expected 1 channel for x_raw, got {C}"
 
-            mode_feats = mode_feats + prior_emb                           # (B,K,d_model)
+        # -----------------------------
+        # 1) NVMD decomposition
+        # -----------------------------
+        # imfs:  (B, K, L)
+        # recon: (B, 1, L)
+        imfs, recon, _, _ = self.decomposer(x_raw)
 
-        # 3) Transformer over modes
-        z = self.transformer(mode_feats)           # (B, K, d_model)
+        # -----------------------------
+        # 2) Multi-scale features
+        # -----------------------------
+        features = self._multi_scale_features(x_raw, imfs, recon)  # (B, d_model, L)
 
-        # 4) Pool and predict
-        pooled = z.mean(dim=1)                     # (B, d_model)
-        out = self.output_head(pooled)             # (B, 1)
-        return out
+        # Reorder to (B, L, d_model) for Transformer
+        features = features.transpose(1, 2)                        # (B, L, d_model)
+
+        # Normalize and add positional encoding
+        features = self.feature_norm(features)
+        features = self.pos_encoding(features)                     # (B, L, d_model)
+
+        # -----------------------------
+        # 3) Transformer over time
+        # -----------------------------
+        encoded = self.transformer(features)                       # (B, L, d_model)
+
+        # -----------------------------
+        # 4) Attention pooling over time
+        # -----------------------------
+        # Global query = mean of encoded sequence
+        pool_query = encoded.mean(dim=1, keepdim=True)             # (B, 1, d_model)
+
+        pooled, attn_weights = self.attention_pool(
+            pool_query,  # query: (B, 1, d_model)
+            encoded,     # key:   (B, L, d_model)
+            encoded,     # value: (B, L, d_model)
+        )
+        # pooled: (B, 1, d_model)
+        pooled = pooled.squeeze(1)                                 # (B, d_model)
+        # attn_weights: (B, 1, L)
+
+        # -----------------------------
+        # 5) Heads
+        # -----------------------------
+        main_pred       = self.output_head(pooled)                 # (B, 1)
+        trend_pred      = self.trend_head(pooled)                  # (B, 1)
+        seasonality_pred= self.seasonality_head(pooled)            # (B, 1)
+
+        return main_pred, trend_pred, seasonality_pred, attn_weights
