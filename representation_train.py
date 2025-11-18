@@ -130,12 +130,14 @@ class FixedMultiModeTransformerRRP(nn.Module):
 # ============================================================
 # Shared Representation Predictor
 # ============================================================
-
 class SharedRepresentationPredictor(nn.Module):
     """
     Uses:
-      - IMF-based per-window features from NVMD
-      - Global spectral priors from decomposer (masks, center freqs, bandwidths)
+      - IMF-based per-window features from NVMD (imfs_ref)
+      - Global spectral priors derived from decomposer's masks:
+          * masks over frequency bins
+          * implied center frequencies μ_k
+          * implied bandwidths σ_k
     to build spectral-aware attention over modes and predict RRP_next.
     """
     def __init__(self, decomposer, d_model, n_heads, num_layers, dim_ff, dropout):
@@ -150,10 +152,14 @@ class SharedRepresentationPredictor(nn.Module):
 
         self.d_model = d_model
 
+        # frequency grid in [0,1] for deriving centers/bandwidths
+        freqs = torch.linspace(0.0, 1.0, self.F)
+        self.register_buffer("freqs", freqs)  # (F,)
+
         # Encode spectral masks (K,F) -> (K,d_model)
         self.freq_embedding = nn.Linear(self.F, d_model)
 
-        # Encode center frequencies ω_k -> (K, d_model//2)
+        # Encode center frequencies μ_k -> (K, d_model//2)
         self.center_freq_encoder = nn.Sequential(
             nn.Linear(1, d_model // 4),
             nn.GELU(),
@@ -179,8 +185,10 @@ class SharedRepresentationPredictor(nn.Module):
         # Ensure embed_dim for MultiheadAttention is divisible by n_heads
         if combined_dim_exact % n_heads != 0:
             attn_dim = (combined_dim_exact // n_heads) * n_heads
-            print(f"[SharedRepresentationPredictor] Projecting combined features "
-                  f"from {combined_dim_exact} to {attn_dim} to fit n_heads={n_heads}")
+            print(
+                f"[SharedRepresentationPredictor] Projecting combined features "
+                f"from {combined_dim_exact} to {attn_dim} to fit n_heads={n_heads}"
+            )
             self.combine_proj = nn.Linear(combined_dim_exact, attn_dim)
         else:
             attn_dim = combined_dim_exact
@@ -216,28 +224,43 @@ class SharedRepresentationPredictor(nn.Module):
 
         device = imfs.device
 
-        # 1. Global spectral priors from decomposer (no grad here)
+        # 1. Global spectral priors from decomposer logits
         with torch.no_grad():
-            spectral_masks = self.decomposer.spectral.masks().to(device)      # (K, F)
-            center_freqs = self.decomposer.spectral.omega.to(device)          # (K,)
-            bandwidths = self.decomposer.spectral.log_sigma.exp().to(device)  # (K,)
+            # logits: (K, F)
+            logits = self.decomposer.spectral.logits.to(device)
+            masks = F.softmax(logits, dim=0)          # (K, F)
+
+            # normalized frequency grid (F,)
+            freqs = self.freqs.to(device)            # (F,)
+            freqs_exp = freqs.unsqueeze(0)           # (1, F)
+
+            # per-mode normalized distribution over frequency
+            pk = masks / (masks.sum(dim=1, keepdim=True) + 1e-8)   # (K, F)
+
+            # center frequencies μ_k = Σ f * p_k(f)
+            center_freqs = (pk * freqs_exp).sum(dim=1)             # (K,)
+
+            # bandwidth σ_k = sqrt( Σ (f - μ_k)^2 * p_k(f) )
+            diff = freqs_exp - center_freqs.unsqueeze(1)           # (K,F)
+            var = (pk * diff**2).sum(dim=1)                        # (K,)
+            bandwidths = torch.sqrt(var + 1e-8)                    # (K,)
 
         # 2. Frequency-domain mask features (same for all windows, per mode)
-        freq_features = self.freq_embedding(spectral_masks)  # (K, d_model)
-        freq_features = freq_features.unsqueeze(0).expand(B, -1, -1)  # (B, K, d_model)
+        freq_features = self.freq_embedding(masks)          # (K, d_model)
+        freq_features = freq_features.unsqueeze(0).expand(B, -1, -1)  # (B,K,d_model)
 
         # 3. Center frequency encoding
         center_features = self.center_freq_encoder(
-            center_freqs.unsqueeze(-1)  # (K, 1)
-        ).unsqueeze(0).expand(B, -1, -1)  # (B, K, d_model//2)
+            center_freqs.unsqueeze(-1)  # (K,1)
+        ).unsqueeze(0).expand(B, -1, -1)                       # (B, K, d_model//2)
 
         # 4. Bandwidth encoding
         bandwidth_features = self.bandwidth_encoder(
-            bandwidths.unsqueeze(-1)  # (K, 1)
-        ).unsqueeze(0).expand(B, -1, -1)  # (B, K, d_model//4)
+            bandwidths.unsqueeze(-1)  # (K,1)
+        ).unsqueeze(0).expand(B, -1, -1)                      # (B, K, d_model//4)
 
         # 5. IMF temporal features (per window, per mode)
-        imf_features = self.mode_aware_transformer(imfs)  # (B, K, d_model)
+        imf_features = self.mode_aware_transformer(imfs)      # (B, K, d_model)
 
         # 6. Combine all features
         combined_features = torch.cat(
@@ -255,8 +278,8 @@ class SharedRepresentationPredictor(nn.Module):
         )  # (B, K, attn_dim)
 
         # 9. Pool over modes and predict scalar
-        pooled = attended_features.mean(dim=1)  # (B, attn_dim)
-        output = self.output_proj(pooled)       # (B, 1)
+        pooled = attended_features.mean(dim=1)   # (B, attn_dim)
+        output = self.output_proj(pooled)        # (B, 1)
         return output
 
 
