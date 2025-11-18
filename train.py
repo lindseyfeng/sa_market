@@ -408,7 +408,6 @@ def run_epoch(
 
         loss = (
             w_pred   * mse
-          + w_imf    * loss_imf
           + w_rrp    * loss_rrp
           + w_smooth * smooth_loss
           + w_ortho  * ortho_loss
