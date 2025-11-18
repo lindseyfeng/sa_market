@@ -134,7 +134,7 @@ def run_epoch(
             # only add decomposer losses when it's actually trainable
             if not freeze_decomposer:
                 # RRP reconstruction loss (force decomposer to stay a good reconstructor)
-                loss_rrp_recon = F.l1_loss(recon_ref, x_raw)
+
 
                 # spectral regularizers (unsupervised, no IMF GT)
                 loss_smooth = decomposer.spectral.spectral_smoothness_loss()
@@ -142,7 +142,6 @@ def run_epoch(
 
                 loss = (
                     loss
-                    + w_decomp_rrp    * loss_rrp_recon
                     + w_decomp_smooth * loss_smooth
                     + w_decomp_ortho  * loss_ortho
                 )
