@@ -30,41 +30,50 @@ class SharedRepresentationPredictor(nn.Module):
         self.decomposer = decomposer
         self.K = decomposer.K
         self.L = decomposer.L
-        self.F = decomposer.spectral.F  # Number of frequency bins
+        self.F = decomposer.spectral.F
         
-        # Directly use decomposer's spectral knowledge
-        self.freq_embedding = nn.Linear(self.F, d_model)  # Frequency domain embedding
+ 
+        assert d_model % n_heads == 0, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
         
-        # Center frequency encoding
+        self.d_model = d_model
+        
+
+        self.freq_embedding = nn.Linear(self.F, d_model)
+        
+
         self.center_freq_encoder = nn.Sequential(
             nn.Linear(1, d_model // 4),
             nn.GELU(),
             nn.Linear(d_model // 4, d_model // 2)
         )
         
-        # Bandwidth encoding
         self.bandwidth_encoder = nn.Sequential(
             nn.Linear(1, d_model // 8),
             nn.GELU(), 
             nn.Linear(d_model // 8, d_model // 4)
         )
         
-        # Mode feature extractor (your existing transformer)
-        self.mode_aware_transformer = MultiModeTransformerRRP(
+        self.mode_aware_transformer = FixedMultiModeTransformerRRP(
             self.K, d_model, n_heads, num_layers, dim_ff, dropout
         )
         
-        # Spectral attention
+   
+        combined_dim = d_model * 2 + d_model//2 + d_model//4
+        
+        if combined_dim % n_heads != 0:
+            combined_dim = (combined_dim // n_heads) * n_heads
+            print(f"Adjusted combined_dim from {d_model * 2 + d_model//2 + d_model//4} to {combined_dim}")
+        
         self.spectral_attention = nn.MultiheadAttention(
-            d_model * 2 + d_model//2 + d_model//4,  # Adjusted for concatenated features
-            n_heads, 
+            embed_dim=combined_dim,
+            num_heads=n_heads, 
             dropout=dropout, 
             batch_first=True
         )
         
         # Output projection
         self.output_proj = nn.Sequential(
-            nn.Linear(d_model * 2 + d_model//2 + d_model//4, d_model),
+            nn.Linear(combined_dim, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_model, d_model // 2),
@@ -104,18 +113,59 @@ class SharedRepresentationPredictor(nn.Module):
             freq_features,          # (B, K, d_model)  
             center_features,        # (B, K, d_model//2)
             bandwidth_features      # (B, K, d_model//4)
-        ], dim=-1)  # (B, K, d_model * 2 + d_model//2 + d_model//4)
+        ], dim=-1)  # (B, K, combined_dim)
         
         # 7. Spectral-aware attention
         attended_features, _ = self.spectral_attention(
             combined_features, combined_features, combined_features
         )
         
-        # 8. Prediction - use mean pooling over modes
+        # 8. Prediction
         output = self.output_proj(attended_features.mean(dim=1))  # (B, 1)
         return output
 
 
+class FixedMultiModeTransformerRRP(nn.Module):
+    def __init__(self, K, d_model, n_heads, num_layers, dim_ff, dropout):
+        super().__init__()
+        self.K = K
+        self.d_model = d_model
+        
+        assert d_model % n_heads == 0, f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+        
+        self.pos_encoding = nn.Parameter(torch.randn(1, K, d_model))
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=dim_ff,
+            dropout=dropout,
+            batch_first=True 
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        self.output_proj = nn.Linear(d_model, d_model)
+        
+    def forward(self, imfs):
+        """
+        imfs: (B, K, L) -> (B, K, d_model)
+        """
+        B, K, L = imfs.shape
+        
+        imf_features = imfs.mean(dim=-1, keepdim=False)  # (B, K)
+        imf_features = imf_features.unsqueeze(-1)  # (B, K, 1)
+        
+        if self.d_model > 1:
+            imf_features = imf_features.expand(-1, -1, self.d_model)
+        else:
+            imf_features = imf_features.squeeze(-1)
+        
+        imf_features = imf_features + self.pos_encoding
+        
+        transformed = self.transformer(imf_features)  # (B, K, d_model)
+        
+        return self.output_proj(transformed)
 # ============================================================
 # RRP Prediction Dataset
 # ============================================================
