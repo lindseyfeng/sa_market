@@ -87,26 +87,6 @@ def run_epoch(
     w_decomp_smooth: float = 0.0,
     w_decomp_ortho: float = 0.0,
 ):
-    """
-    If optimizer is provided → training, otherwise evaluation.
-
-    Pipeline:
-        x_raw (B,1,L) --decomposer--> imfs_ref (B,K,L), recon_ref (B,1,L)
-                             |
-                             v
-                    predictor → rrp_next_hat (B,1)
-
-    Primary loss: MSE on raw RRP (prediction loss).
-    Decomposer-side priors (only in joint training when decomposer is unfrozen):
-        - L1(recon_ref, x_raw)
-        - spectral_smoothness_loss()
-        - orthogonality_loss()
-
-    decomp_grad_scale:
-        - Only used when training AND freeze_decomposer=False.
-        - Multiplies decomposer parameter gradients by this factor
-          before gradient clipping & optimizer.step().
-    """
     is_train = optimizer is not None
 
     if freeze_decomposer:
@@ -137,14 +117,9 @@ def run_epoch(
         else:
             ctx = torch.no_grad() if freeze_decomposer else torch.enable_grad()
 
-        with ctx:
-            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)  # (B,K,L), (B,1,L), ...
-
-        if freeze_decomposer:
-            imfs_ref = imfs_ref.detach()  # extra safety
 
         # ---- Forward through Transformer predictor ----
-        rrp_next_hat = predictor(imfs_ref)   # (B,1)
+        rrp_next_hat = predictor(x_raw)   # (B,1)
 
         # prediction metrics
         mse = F.mse_loss(rrp_next_hat, rrp_next)
