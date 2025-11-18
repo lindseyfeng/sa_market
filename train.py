@@ -332,17 +332,13 @@ def run_epoch(
 #                          Utilities
 # ============================================================
 
-def set_seed(seed: int = 1337):
+def set_seed(seed: int = 54):
     import random
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-
-# ============================================================
-#                            MAIN
-# ============================================================
 
 def main():
     ap = argparse.ArgumentParser()
@@ -362,6 +358,18 @@ def main():
     ap.add_argument("--dim-ff",         type=int, default=256)
     ap.add_argument("--dropout",        type=float, default=0.1)
 
+    # >>> NEW: optional NVMD init from previous decomposer checkpoint <<<
+    ap.add_argument(
+        "--nvmd-ckpt",
+        type=str,
+        default=None,
+        help=(
+            "Path to a pretrained HybridSpectralNVMD checkpoint "
+            "(state_dict) to initialize the decomposer. "
+            "If not provided, NVMD is randomly initialized."
+        ),
+    )
+
     # training
     ap.add_argument("--batch",         type=int,   default=256)
     ap.add_argument("--epochs",        type=int,   default=50)
@@ -373,7 +381,7 @@ def main():
 
     # loss weights
     ap.add_argument("--w-pred",   type=float, default=1.0)
-    ap.add_argument("--w-imf",    type=float, default=0.5)
+    ap.add_argument("--w-imf",    type=float, default=0.5)   # note: not used in loss right now
     ap.add_argument("--w-rrp",    type=float, default=0.1)
     ap.add_argument("--w-smooth", type=float, default=0.01)
     ap.add_argument("--w-ortho",  type=float, default=0.01)
@@ -387,7 +395,9 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
-    # data
+    # -----------------------------
+    #  Data
+    # -----------------------------
     df_tr = pd.read_csv(args.train_csv)
     df_va = pd.read_csv(args.val_csv)
 
@@ -420,7 +430,9 @@ def main():
 
     print(f"Train windows: {len(tr_ds)}, Val windows: {len(va_ds)}")
 
-    # model
+    # -----------------------------
+    #  Model
+    # -----------------------------
     model = NVMDTransformerCross(
         K=args.K,
         seq_len=args.seq_len,
@@ -432,6 +444,32 @@ def main():
         dropout=args.dropout,
     ).to(device)
 
+    # >>> NEW: optionally initialize NVMD from previous checkpoint <<<
+    if args.nvmd_ckpt is not None:
+        print(f"Loading NVMD decomposer weights from: {args.nvmd_ckpt}")
+        ckpt = torch.load(args.nvmd_ckpt, map_location="cpu")
+
+        # Assume this file came from your NVMD script where you did:
+        #   torch.save(model.state_dict(), args.out)
+        # or a wrapped dict with 'model_state' / 'state_dict'.
+        state = ckpt
+        if isinstance(state, dict) and not any(k.startswith("spectral.") for k in state.keys()):
+            # Possibly wrapped
+            if "model_state" in state:
+                state = state["model_state"]
+            elif "state_dict" in state:
+                state = state["state_dict"]
+
+        missing, unexpected = model.decomposer.load_state_dict(state, strict=False)
+        print("Loaded into model.decomposer with strict=False")
+        print("  missing keys:", missing)
+        print("  unexpected keys:", unexpected)
+    else:
+        print("No --nvmd-ckpt provided → NVMD initialized randomly.")
+
+    # -----------------------------
+    #  Optimizer
+    # -----------------------------
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
@@ -440,6 +478,9 @@ def main():
 
     best_val_mae = float("inf")
 
+    # -----------------------------
+    #  Training loop
+    # -----------------------------
     for ep in range(1, args.epochs + 1):
         tr_mse, tr_mae = run_epoch(
             model,
@@ -484,6 +525,7 @@ def main():
                 args.out,
             )
             print(f"  → Saved new best checkpoint with val MAE={best_val_mae:.4f} to {args.out}")
+
 
 
 if __name__ == "__main__":
