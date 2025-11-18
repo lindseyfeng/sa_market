@@ -76,7 +76,7 @@ class SpectralDecomposer(nn.Module):
         super().__init__()
         self.K = K
         self.L = signal_len
-        self.F = signal_len // 1.5 + 1
+        self.F = signal_len // 2 + 1
 
         # frequency grid in [0, π]
         freqs = torch.linspace(0.0, np.pi, self.F)
