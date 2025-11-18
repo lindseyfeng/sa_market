@@ -16,7 +16,7 @@ class NVMDModeEncoderTail(nn.Module):
 
     This keeps recent dynamics instead of global mean over the whole window.
     """
-    def __init__(self, K, L, d_model, last_k: int = 16):
+    def __init__(self, K, L, d_model, last_k: int = 8):
         super().__init__()
         self.K = K
         self.L = L
