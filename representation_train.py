@@ -360,13 +360,11 @@ def run_epoch(
 
             # Optional decomposer-side regularization in joint training
             if not freeze_decomposer:
-                loss_rrp_recon = F.l1_loss(recon_ref, x_raw)
                 loss_smooth = decomposer.spectral.spectral_smoothness_loss()
                 loss_ortho = decomposer.spectral.orthogonality_loss()
 
                 loss = (
                     loss
-                    + w_decomp_rrp * loss_rrp_recon
                     + w_decomp_smooth * loss_smooth
                     + w_decomp_ortho * loss_ortho
                 )
