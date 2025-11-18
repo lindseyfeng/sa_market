@@ -322,12 +322,14 @@ def main():
     #  New Transformer predictor (from scratch)
     # -----------------------------
     predictor = NVMDTransformerPredictor(
-        decomposer= decomposer,
+        decomposer=decomposer,
         d_model=args.d_model,
         n_heads=args.n_heads,
         num_layers=args.num_layers,
         dim_ff=args.dim_ff,
         dropout=args.dropout,
+        last_k=16,                 # or 16 if you prefer shorter tail
+        use_spectral_priors=True,  # or False to test "IMF-only" baseline
     ).to(device)
 
     best_val_mae = float("inf")
