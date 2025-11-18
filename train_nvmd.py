@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
+
 class VMD13IMFDataset(Dataset):
     def __init__(
         self,
@@ -25,37 +26,29 @@ class VMD13IMFDataset(Dataset):
         if rrp_col not in df.columns:
             raise ValueError(f"RRP column '{rrp_col}' not in dataframe")
 
-        # Build mode column list: Mode_1..Mode_12, Residual
         mode_cols = [f"Mode_{i}" for i in range(1, K)] + ["Residual"]
         for c in mode_cols:
             if c not in df.columns:
                 raise ValueError(f"Missing mode column '{c}' in dataframe")
         self.mode_cols = mode_cols
 
-        rrp = df[rrp_col].to_numpy(dtype=np.float32)              # (T,)
-        imfs = df[mode_cols].to_numpy(dtype=np.float32)           # (T, K)
+        rrp = df[rrp_col].to_numpy(dtype=np.float32)       # (T,)
+        imfs = df[mode_cols].to_numpy(dtype=np.float32)    # (T, K)
 
-        self.rrp = torch.from_numpy(rrp)                          # (T,)
-        # convert to (K, T)
-        self.imfs = torch.from_numpy(imfs).transpose(0, 1)        # (K, T)
+        self.rrp = torch.from_numpy(rrp)                   # (T,)
+        self.imfs = torch.from_numpy(imfs).transpose(0, 1) # (K, T)
 
         T = self.rrp.shape[0]
-        self.N = max(0, T - self.L)   # last window ends at T-1
+        self.N = max(0, T - self.L)
 
     def __len__(self):
         return self.N
 
     def __getitem__(self, i: int):
         L = self.L
-
-        # raw RRP window (1, L)
-        x_raw = self.rrp[i:i+L].unsqueeze(0)              # (1, L)
-
-        # IMFs window (K, L)
-        imfs_true = self.imfs[:, i:i+L]                   # (K, L)
-
+        x_raw = self.rrp[i:i+L].unsqueeze(0)      # (1, L)
+        imfs_true = self.imfs[:, i:i+L]           # (K, L)
         return x_raw, imfs_true
-
 
 
 class SpectralDecomposer(nn.Module):
@@ -65,40 +58,67 @@ class SpectralDecomposer(nn.Module):
         self.L = signal_len
         self.F = signal_len // 2 + 1
 
-        # logits for masks: (K, F)
+        # logits over masks: (K, F)
         self.logits = nn.Parameter(torch.zeros(K, self.F))
+
+        # fixed frequency grid [0,1] for stats
+        freqs = torch.linspace(0.0, 1.0, self.F)
+        self.register_buffer("freqs", freqs)  # (F,)
+
+    def masks(self):
+        """Softmax masks over modes at each frequency: (K, F)."""
+        return F.softmax(self.logits, dim=0)
+
+    def mask_stats(self):
+        """
+        Compute per-mode center frequency μ_k and bandwidth σ_k
+        from the learned masks (no extra parameters).
+
+        Returns:
+          center_freqs: (K,)
+          bandwidths:  (K,)
+        """
+        masks = self.masks()                        # (K, F)
+        freqs = self.freqs.unsqueeze(0)             # (1, F)
+
+        # Normalize per mode to get p_k(f)
+        pk = masks / (masks.sum(dim=1, keepdim=True) + 1e-8)  # (K, F)
+
+        # μ_k = Σ f * p_k(f)
+        center = (pk * freqs).sum(dim=1)                      # (K,)
+
+        # σ_k^2 = Σ (f - μ_k)^2 * p_k(f)
+        diff = freqs - center.unsqueeze(1)                    # (K, F)
+        var = (pk * diff**2).sum(dim=1)                       # (K,)
+        bandwidth = torch.sqrt(var + 1e-8)
+
+        return center, bandwidth
 
     def forward(self, x: torch.Tensor):
         B, C, L = x.shape
         assert C == 1, f"Expected 1 channel, got {C}"
         assert L == self.L, f"Expected signal_len={self.L}, got {L}"
 
-        # rFFT along time dimension
-        Xf = torch.fft.rfft(x, dim=-1)    # (B, 1, F), complex
+        # rFFT along time
+        Xf = torch.fft.rfft(x, dim=-1)           # (B,1,F), complex
 
-        # masks: (K, F), softmax over K
-        masks = F.softmax(self.logits, dim=0)  # (K, F)
-        masks_exp = masks.unsqueeze(0).expand(B, -1, -1)   # (B, K, F)
+        masks = self.masks()                     # (K, F)
+        masks_exp = masks.unsqueeze(0).expand(B, -1, -1)      # (B,K,F)
 
-        # broadcast Xf to (B, K, F)
-        Xf_exp = Xf.expand(-1, self.K, -1)                  # (B, K, F)
-        Xf_modes = Xf_exp * masks_exp.to(Xf.dtype)          # (B, K, F), complex
+        Xf_exp = Xf.expand(-1, self.K, -1)       # (B,K,F)
+        Xf_modes = Xf_exp * masks_exp.to(Xf.dtype)            # (B,K,F)
 
-        # inverse FFT
-        imfs_lin = torch.fft.irfft(Xf_modes, n=self.L, dim=-1)  # (B, K, L), real
-
-        # reconstruction
-        recon_lin = imfs_lin.sum(dim=1, keepdim=True)           # (B, 1, L)
-
+        imfs_lin = torch.fft.irfft(Xf_modes, n=self.L, dim=-1)  # (B,K,L)
+        recon_lin = imfs_lin.sum(dim=1, keepdim=True)           # (B,1,L)
         return imfs_lin, recon_lin
 
     def spectral_smoothness_loss(self):
-        masks = F.softmax(self.logits, dim=0)  # (K, F)
-        diff = masks[:, 1:] - masks[:, :-1]    # (K, F-1)
+        masks = self.masks()               # (K, F)
+        diff = masks[:, 1:] - masks[:, :-1]
         return (diff ** 2).mean()
-        
+
     def orthogonality_loss(self):
-        masks = F.softmax(self.logits, dim=0)  # (K, F)
+        masks = self.masks()               # (K, F)
         K, Ffreq = masks.shape
         loss = 0.0
         cnt = 0
@@ -114,17 +134,23 @@ class SpectralDecomposer(nn.Module):
             loss = loss / cnt
         return loss
 
+    def zero_mean_time_loss(self, imfs_lin: torch.Tensor):
+        """
+        Optional: penalize non-zero mean per mode in time domain.
+        imfs_lin: (B,K,L)
+        """
+        mean_per_mode = imfs_lin.mean(dim=-1)  # (B,K)
+        return (mean_per_mode ** 2).mean()
+
+    def energy_balance_loss(self, imfs_lin: torch.Tensor, x_raw: torch.Tensor):
+        """
+        Optional: encourage sum of IMFs to match raw energy.
+        """
+        recon = imfs_lin.sum(dim=1, keepdim=True)  # (B,1,L)
+        return ((recon - x_raw) ** 2).mean()
 
 
 class ModewiseRefiner(nn.Module):
-    """
-    Small depthwise CNN applied per mode:
-
-      Input:  imfs_lin (B, K, L)
-      Output: imfs_refined (B, K, L)
-
-    Uses depthwise Conv1d with groups=K so each mode has its own filter.
-    """
     def __init__(self, K: int, kernel_size: int = 3):
         super().__init__()
         padding = kernel_size // 2
@@ -146,35 +172,20 @@ class ModewiseRefiner(nn.Module):
         )
         self.act = nn.GELU()
 
-        # Init small weights so we start near identity
         nn.init.zeros_(self.conv1.weight)
         nn.init.zeros_(self.conv1.bias)
         nn.init.zeros_(self.conv2.weight)
         nn.init.zeros_(self.conv2.bias)
 
     def forward(self, imfs_lin: torch.Tensor) -> torch.Tensor:
-        """
-        imfs_lin: (B, K, L)
-        returns:  (B, K, L)
-        """
         x = imfs_lin
         y = self.act(self.conv1(x))
         y = self.conv2(y)
-        return x + y   # residual refinement
+        return x + y
 
-
-# ============================================================
-#                Hybrid Spectral + CNN Decomposer
-# ============================================================
 
 class HybridSpectralNVMD(nn.Module):
     """
-    Full hybrid decomposer:
-
-      - SpectralDecomposer produces linear IMFs (frequency-partitioned).
-      - ModewiseRefiner refines each mode with small depthwise CNN.
-      - Sum over refined IMFs reconstructs RRP.
-
     Forward:
       x_raw:        (B,1,L)
       imfs_refined: (B,K,L)
@@ -191,9 +202,9 @@ class HybridSpectralNVMD(nn.Module):
         self.refiner  = ModewiseRefiner(K=K)
 
     def forward(self, x_raw: torch.Tensor):
-        imfs_lin, recon_lin = self.spectral(x_raw)               # (B,K,L), (B,1,L)
-        imfs_refined = self.refiner(imfs_lin)                    # (B,K,L)
-        recon_refined = imfs_refined.sum(dim=1, keepdim=True)    # (B,1,L)
+        imfs_lin, recon_lin = self.spectral(x_raw)
+        imfs_refined = self.refiner(imfs_lin)
+        recon_refined = imfs_refined.sum(dim=1, keepdim=True)
         return imfs_refined, recon_refined, imfs_lin, recon_lin
 
 def train_epoch(
