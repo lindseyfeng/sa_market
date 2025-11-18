@@ -322,7 +322,7 @@ def main():
     #  New Transformer predictor (from scratch)
     # -----------------------------
     predictor = NVMDTransformerPredictor(
-        K=args.K,
+        decomposer= decomposer,
         seq_len=args.seq_len,
         d_model=args.d_model,
         n_heads=args.n_heads,
