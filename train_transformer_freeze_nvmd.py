@@ -7,7 +7,10 @@
         --seq-len 256 \
         --warmup-epochs 20 \
         --joint-epochs 100 \
-        --decomp-grad-scale 5.0 \
+        --decomp-grad-scale 10.0 \
+        --w-decomp-rrp 0.1 \
+        --w-decomp-smooth 0.01 \
+        --w-decomp-ortho 0.01 \
         --out nvmd_transformer_rrp.pt
 """
 
@@ -23,7 +26,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from train_nvmd import HybridSpectralNVMD
-from train_transformer import MultiModeTransformerRRP  # your definition from the other script
+from train_transformer import MultiModeTransformerRRP
 
 
 # ============================================================
@@ -79,18 +82,24 @@ def run_epoch(
     freeze_decomposer: bool = True,
     max_grad_norm: float = 10.0,
     decomp_grad_scale: float = 1.0,
+    w_decomp_rrp: float = 0.0,
+    w_decomp_smooth: float = 0.0,
+    w_decomp_ortho: float = 0.0,
 ):
     """
     If optimizer is provided → training, otherwise evaluation.
 
     Pipeline:
-        x_raw (B,1,L) --decomposer--> imfs_ref (B,K,L)
+        x_raw (B,1,L) --decomposer--> imfs_ref (B,K,L), recon_ref (B,1,L)
                              |
                              v
                     predictor → rrp_next_hat (B,1)
 
-    Loss: MSE on raw RRP.
-    Metrics: MSE, MAE (on raw RRP).
+    Primary loss: MSE on raw RRP (prediction loss).
+    Decomposer-side priors (only in joint training when decomposer is unfrozen):
+        - L1(recon_ref, x_raw)
+        - spectral_smoothness_loss()
+        - orthogonality_loss()
 
     decomp_grad_scale:
         - Only used when training AND freeze_decomposer=False.
@@ -128,7 +137,7 @@ def run_epoch(
             ctx = torch.no_grad() if freeze_decomposer else torch.enable_grad()
 
         with ctx:
-            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)  # (B,K,L), ...
+            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)  # (B,K,L), (B,1,L), ...
 
         if freeze_decomposer:
             imfs_ref = imfs_ref.detach()  # extra safety
@@ -136,12 +145,31 @@ def run_epoch(
         # ---- Forward through Transformer predictor ----
         rrp_next_hat = predictor(imfs_ref)   # (B,1)
 
+        # prediction metrics
         mse = F.mse_loss(rrp_next_hat, rrp_next)
         mae = F.l1_loss(rrp_next_hat, rrp_next)
 
         if is_train:
-            # use MSE as training loss
-            mse.backward()
+            # base loss is prediction loss
+            loss = mse
+
+            # only add decomposer losses when it's actually trainable
+            if not freeze_decomposer:
+                # RRP reconstruction loss (force decomposer to stay a good reconstructor)
+                loss_rrp_recon = F.l1_loss(recon_ref, x_raw)
+
+                # spectral regularizers (unsupervised, no IMF GT)
+                loss_smooth = decomposer.spectral.spectral_smoothness_loss()
+                loss_ortho  = decomposer.spectral.orthogonality_loss()
+
+                loss = (
+                    loss
+                    + w_decomp_rrp    * loss_rrp_recon
+                    + w_decomp_smooth * loss_smooth
+                    + w_decomp_ortho  * loss_ortho
+                )
+
+            loss.backward()
 
             # If decomposer is trainable, scale its gradients
             if not freeze_decomposer and decomp_grad_scale != 1.0:
@@ -224,6 +252,14 @@ def main():
     ap.add_argument("--decomp-grad-scale", type=float, default=5.0,
                     help="Multiplier for decomposer gradients in joint stage "
                          "(>1.0 makes NVMD move more per step).")
+
+    # Decomposer-side losses in joint stage (no IMF GT involved)
+    ap.add_argument("--w-decomp-rrp", type=float, default=0.1,
+                    help="Weight for L1(recon_ref, x_raw) in joint stage.")
+    ap.add_argument("--w-decomp-smooth", type=float, default=0.01,
+                    help="Weight for spectral_smoothness_loss() in joint stage.")
+    ap.add_argument("--w-decomp-ortho", type=float, default=0.01,
+                    help="Weight for orthogonality_loss() in joint stage.")
 
     # I/O
     ap.add_argument("--out", type=str, default="./nvmd_transformer_rrp.pt")
@@ -317,6 +353,9 @@ def main():
             freeze_decomposer=True,
             max_grad_norm=args.max_grad_norm,
             decomp_grad_scale=1.0,  # not used when frozen
+            w_decomp_rrp=0.0,
+            w_decomp_smooth=0.0,
+            w_decomp_ortho=0.0,
         )
 
         va_mse, va_mae = run_epoch(
@@ -328,6 +367,9 @@ def main():
             freeze_decomposer=True,
             max_grad_norm=args.max_grad_norm,
             decomp_grad_scale=1.0,
+            w_decomp_rrp=0.0,
+            w_decomp_smooth=0.0,
+            w_decomp_ortho=0.0,
         )
 
         print(
@@ -373,6 +415,9 @@ def main():
             freeze_decomposer=False,
             max_grad_norm=args.max_grad_norm,
             decomp_grad_scale=args.decomp_grad_scale,
+            w_decomp_rrp=args.w_decomp_rrp,
+            w_decomp_smooth=args.w_decomp_smooth,
+            w_decomp_ortho=args.w_decomp_ortho,
         )
 
         va_mse, va_mae = run_epoch(
@@ -384,6 +429,9 @@ def main():
             freeze_decomposer=False,
             max_grad_norm=args.max_grad_norm,
             decomp_grad_scale=1.0,  # no grad in eval
+            w_decomp_rrp=args.w_decomp_rrp,
+            w_decomp_smooth=args.w_decomp_smooth,
+            w_decomp_ortho=args.w_decomp_ortho,
         )
 
         print(
@@ -402,8 +450,12 @@ def main():
                     "predictor_state": predictor.state_dict(),
                     "decomposer_state": decomposer.state_dict(),
                     "args": vars(args),
-                    "notes": "Joint: predictor + decomposer trained on prediction MSE "
-                             f"(decomp_grad_scale={args.decomp_grad_scale})",
+                    "notes": (
+                        "Joint: predictor + decomposer trained on prediction MSE "
+                        f"+ decomp priors (rrp={args.w_decomp_rrp}, "
+                        f"smooth={args.w_decomp_smooth}, ortho={args.w_decomp_ortho}, "
+                        f"decomp_grad_scale={args.decomp_grad_scale})"
+                    ),
                 },
                 args.out,
             )
