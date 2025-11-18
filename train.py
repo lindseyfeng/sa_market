@@ -197,26 +197,26 @@ def main():
     ap.add_argument("--dropout",    type=float, default=0.1)
 
     # Optional: initialize decomposer from a separate NVMD checkpoint
-    ap.add_argument("--decomposer-ckpt", type=str, default="",
+    ap.add_argument("--decomposer_ckpt", type=str, default="",
                     help="Optional NVMD-only checkpoint to init model.decomposer")
 
     # Training
     ap.add_argument("--batch",          type=int,   default=256)
-    ap.add_argument("--warmup-epochs",  type=int,  default=20,
+    ap.add_argument("--warmup_epochs",  type=int,  default=20,
                     help="Epochs with decomposer frozen (prediction-only).")
-    ap.add_argument("--joint-epochs",   type=int,  default=80,
+    ap.add_argument("--joint_epochs",   type=int,  default=80,
                     help="Epochs of joint training (NVMD + Transformer).")
     ap.add_argument("--lr",             type=float, default=1e-3)
-    ap.add_argument("--weight-decay",   type=float, default=1e-2)
+    ap.add_argument("--weight_decay",   type=float, default=1e-2)
     ap.add_argument("--seed",           type=int,   default=42)
-    ap.add_argument("--num-workers",    type=int,   default=0)
-    ap.add_argument("--max-grad-norm",  type=float, default=10.0)
+    ap.add_argument("--num_workers",    type=int,   default=0)
+    ap.add_argument("--max_grad_norm",  type=float, default=10.0)
 
     # Loss weights for joint stage
-    ap.add_argument("--w-pred",   type=float, default=1.0)
-    ap.add_argument("--w-rrp",    type=float, default=0.1)
-    ap.add_argument("--w-smooth", type=float, default=0.01)
-    ap.add_argument("--w-ortho",  type=float, default=0.01)
+    ap.add_argument("--w_pred",   type=float, default=1.0)
+    ap.add_argument("--w_rrp",    type=float, default=0.1)
+    ap.add_argument("--w_smooth", type=float, default=0.01)
+    ap.add_argument("--w_ortho",  type=float, default=0.01)
 
     # I/O
     ap.add_argument("--out", type=str, default="./nvmd_transformer_joint.pt")
@@ -270,7 +270,7 @@ def main():
     ).to(device)
 
     # Optionally initialize decomposer from separate NVMD ckpt
-    if args.decomposer-ckpt and os.path.exists(args.decomposer_ckpt):
+    if args.decomposer_ckpt and os.path.exists(args.decomposer_ckpt):
         print(f"Loading decomposer initialization from {args.decomposer_ckpt}")
         dec_ckpt = torch.load(args.decomposer_ckpt, map_location="cpu")
         if isinstance(dec_ckpt, dict) and "model_state" in dec_ckpt:
