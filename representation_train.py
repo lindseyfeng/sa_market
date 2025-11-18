@@ -319,7 +319,7 @@ def run_epoch(
 
         # Forward through NVMD decomposer
         with ctx:
-            imfs_ref, recon_ref, imfs_lin, recon_lin, _ = decomposer(x_raw)
+            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)
 
         # If decomposer is frozen, detach IMFs completely
         if freeze_decomposer or not is_train:
