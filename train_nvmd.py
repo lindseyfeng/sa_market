@@ -395,7 +395,7 @@ def train_epoch(
         loss_zero_mean = (mode_mean ** 2).mean()
 
         loss = (
-            w_imf       * loss_imf
+            w_imf       * imf_mae
             + w_rrp     * loss_rrp
             + w_smooth  * loss_smooth
             + w_ortho   * loss_ortho
