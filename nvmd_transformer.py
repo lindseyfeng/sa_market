@@ -39,30 +39,18 @@ class PositionalEncoding(nn.Module):
 
 class EnhancedNVMDTransformer(nn.Module):
     """
-    Enhanced NVMD-aware predictor:
+    Enhanced NVMD-aware predictor.
 
-      Input:
-        x_raw: (B, 1, L)  raw RRP window
+    The ONLY job: given a raw RRP window x_raw (B,1,L),
+    predict the next-step RRP (B,1).
 
-      Inside:
-        - NVMD decomposer produces:
-            imfs:  (B, K, L)
-            recon: (B, 1, L)
-        - Multi-scale feature extraction:
-            raw_features:   Conv1d over x_raw
-            imf_features:   depthwise + pointwise Conv1d over imfs
-            recon_features: Conv1d over recon
-          -> concatenated to (B, d_model, L)
-        - Transformer encoder over time (L tokens, d_model each)
-        - Multihead attention pooling over time
-        - Main head:       predict next-step RRP
-        - Aux heads:       predict trend / seasonality (optional targets)
-
-      Output:
-        main_pred:      (B, 1)
-        trend_pred:     (B, 1)
-        seasonality_pred:(B, 1)
-        attn_weights:   (B, 1, L) attention weights over time
+    Pipeline:
+      x_raw (B,1,L)
+        └─ decomposer(x_raw) → imfs (B,K,L), recon (B,1,L)
+           └─ multi-scale Conv1d over raw / imfs / recon → (B,d_model,L)
+              └─ Transformer over time (L tokens, d_model)
+                 └─ attention pooling over time → (B,d_model)
+                    └─ MLP → (B,1) next-step price
     """
     def __init__(
         self,
@@ -156,7 +144,7 @@ class EnhancedNVMDTransformer(nn.Module):
         )
 
         # ------------------------------------------------
-        # Output heads
+        # Output head: ONLY next-step RRP
         # ------------------------------------------------
         self.output_head = nn.Sequential(
             nn.Linear(d_model, dim_ff),
@@ -168,11 +156,12 @@ class EnhancedNVMDTransformer(nn.Module):
             nn.Linear(dim_ff // 2, 1),
         )
 
-        # Optional auxiliary heads (only useful if you define targets)
-        self.trend_head = nn.Linear(d_model, 1)
-        self.seasonality_head = nn.Linear(d_model, 1)
-
-    def _multi_scale_features(self, x_raw: torch.Tensor, imfs: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
+    def _multi_scale_features(
+        self,
+        x_raw: torch.Tensor,
+        imfs: torch.Tensor,
+        recon: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Build (B, d_model, L) feature map from raw, imfs, recon.
         """
@@ -201,63 +190,43 @@ class EnhancedNVMDTransformer(nn.Module):
 
         return features
 
-    def forward(self, x_raw: torch.Tensor):
+    def forward(self, x_raw: torch.Tensor) -> torch.Tensor:
         """
         x_raw: (B, 1, L)  raw RRP window
 
         Returns:
-          main_pred:       (B, 1)
-          trend_pred:      (B, 1)
-          seasonality_pred:(B, 1)
-          attn_weights:    (B, 1, L)
+          rrp_next_hat: (B, 1)  predicted next-step price
         """
         B, C, L = x_raw.shape
         assert C == 1, f"Expected 1 channel for x_raw, got {C}"
 
-        # -----------------------------
         # 1) NVMD decomposition
-        # -----------------------------
         # imfs:  (B, K, L)
         # recon: (B, 1, L)
         imfs, recon, _, _ = self.decomposer(x_raw)
 
-        # -----------------------------
         # 2) Multi-scale features
-        # -----------------------------
         features = self._multi_scale_features(x_raw, imfs, recon)  # (B, d_model, L)
 
-        # Reorder to (B, L, d_model) for Transformer
+        # 3) Reorder to (B, L, d_model) for Transformer
         features = features.transpose(1, 2)                        # (B, L, d_model)
 
-        # Normalize and add positional encoding
+        # 4) Normalize + positional encoding
         features = self.feature_norm(features)
         features = self.pos_encoding(features)                     # (B, L, d_model)
 
-        # -----------------------------
-        # 3) Transformer over time
-        # -----------------------------
+        # 5) Transformer over time
         encoded = self.transformer(features)                       # (B, L, d_model)
 
-        # -----------------------------
-        # 4) Attention pooling over time
-        # -----------------------------
-        # Global query = mean of encoded sequence
+        # 6) Attention pooling over time
         pool_query = encoded.mean(dim=1, keepdim=True)             # (B, 1, d_model)
-
-        pooled, attn_weights = self.attention_pool(
+        pooled, _ = self.attention_pool(
             pool_query,  # query: (B, 1, d_model)
             encoded,     # key:   (B, L, d_model)
             encoded,     # value: (B, L, d_model)
         )
-        # pooled: (B, 1, d_model)
         pooled = pooled.squeeze(1)                                 # (B, d_model)
-        # attn_weights: (B, 1, L)
 
-        # -----------------------------
-        # 5) Heads
-        # -----------------------------
-        main_pred       = self.output_head(pooled)                 # (B, 1)
-        trend_pred      = self.trend_head(pooled)                  # (B, 1)
-        seasonality_pred= self.seasonality_head(pooled)            # (B, 1)
-
-        return main_pred, trend_pred, seasonality_pred, attn_weights
+        # 7) Final scalar prediction
+        rrp_next_hat = self.output_head(pooled)                    # (B, 1)
+        return rrp_next_hat
