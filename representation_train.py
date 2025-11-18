@@ -404,6 +404,25 @@ def main():
                        help="Experiment name")
     
     args = parser.parse_args()
+
+    def check_data_distribution(train_csv, val_csv):
+        df_train = pd.read_csv(train_csv)
+        df_val = pd.read_csv(val_csv)
+        
+        train_rrp = df_train['RRP']
+        val_rrp = df_val['RRP']
+        
+        print(f"Train RRP - Mean: {train_rrp.mean():.2f}, Std: {train_rrp.std():.2f}")
+        print(f"Val RRP - Mean: {val_rrp.mean():.2f}, Std: {val_rrp.std():.2f}")
+        print(f"Train min/max: {train_rrp.min():.2f}/{train_rrp.max():.2f}")
+        print(f"Val min/max: {val_rrp.min():.2f}/{val_rrp.max():.2f}")
+        
+        if abs(train_rrp.mean() - val_rrp.mean()) > train_rrp.std() * 0.5:
+            print("WARNING: Significant distribution shift between train and val!")
+
+    print(check_data_distribution(args.train_csv, args.val_csv))
+
+    
     
     # Setup
     set_seed(args.seed)
