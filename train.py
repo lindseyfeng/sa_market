@@ -2,7 +2,7 @@
 """
 Usage example:
 
-    python train_nvmd_transformer_joint.py \
+    python train.py \
         --train-csv VMD_modes_with_residual_2018_2021.csv \
         --val-csv   VMD_modes_with_residual_2021_2022.csv \
         --seq-len 256 \
