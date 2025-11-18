@@ -189,7 +189,7 @@ def main():
                     help="Epochs with decomposer frozen (predictor only).")
     ap.add_argument("--joint-epochs",   type=int,   default=30,
                     help="Epochs of joint training (decomposer + predictor).")
-    ap.add_argument("--lr",             type=float, default=1e-4)
+    ap.add_argument("--lr",             type=float, default=1e-3)
     ap.add_argument("--weight-decay",   type=float, default=1e-2)
     ap.add_argument("--seed",           type=int,   default=42)
     ap.add_argument("--num-workers",    type=int,   default=0)
