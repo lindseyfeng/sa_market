@@ -323,7 +323,6 @@ def main():
     # -----------------------------
     predictor = NVMDTransformerPredictor(
         decomposer= decomposer,
-        seq_len=args.seq_len,
         d_model=args.d_model,
         n_heads=args.n_heads,
         num_layers=args.num_layers,
