@@ -27,6 +27,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from train_nvmd import HybridSpectralNVMD
 from train_transformer import MultiModeTransformerRRP
+from nvmd_transformer import NVMDTransformerPredictor
 
 
 # ============================================================
@@ -320,7 +321,7 @@ def main():
     # -----------------------------
     #  New Transformer predictor (from scratch)
     # -----------------------------
-    predictor = MultiModeTransformerRRP(
+    predictor = NVMDTransformerPredictor(
         K=args.K,
         seq_len=args.seq_len,
         d_model=args.d_model,
