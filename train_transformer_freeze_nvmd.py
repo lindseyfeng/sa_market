@@ -137,7 +137,7 @@ def run_epoch(
             ctx = torch.no_grad() if freeze_decomposer else torch.enable_grad()
 
         with ctx:
-            imfs_ref, recon_ref, imfs_lin, recon_lin, _ = decomposer(x_raw)  # (B,K,L), (B,1,L), ...
+            imfs_ref, recon_ref, imfs_lin, recon_lin = decomposer(x_raw)  # (B,K,L), (B,1,L), ...
 
         if freeze_decomposer:
             imfs_ref = imfs_ref.detach()  # extra safety
