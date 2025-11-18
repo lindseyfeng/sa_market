@@ -1,20 +1,35 @@
 #!/usr/bin/env python3
 """
-Usage example:
+Joint NVMD + Transformer training with IMF supervision and prediction.
 
-    python train.py \
+- Dataset:
+    x_raw:      (1, L)   window of raw RRP [t, ..., t+L-1]
+    imfs_true:  (K, L)   VMD IMFs over same window
+    rrp_next:   (1,)     RRP at time t+L
+
+- Model:
+    NVMDTransformerJoint:
+        x_raw -> HybridSpectralNVMD -> imfs_ref, recon_ref, priors
+        x_modes = cat(raw, imfs_ref) -> MultiModeTransformerRRP -> rrp_hat
+
+- Loss:
+    loss = w_pred   * MSE(rrp_hat, rrp_next)
+         + w_imf    * relRMSE(imfs_ref, imfs_true)
+         + w_rrp    * L1(recon_ref, x_raw)
+         + w_smooth * smooth_loss
+         + w_ortho  * ortho_loss
+
+Example:
+
+    python train_joint_nvmd_transformer_imf.py \
         --train-csv VMD_modes_with_residual_2018_2021.csv \
         --val-csv   VMD_modes_with_residual_2021_2022.csv \
         --seq-len 256 \
-        --warmup_epochs 20 \
-        --joint_epochs 100 \
-        --out nvmd_transformer_joint.pt
+        --epochs 100 \
+        --out nvmd_transformer_joint_imf.pt
 """
 
 import argparse
-import os
-import math
-
 import numpy as np
 import pandas as pd
 import torch
@@ -22,33 +37,52 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-from train_nvmd import HybridSpectralNVMD  
-from MultiModeTransformerRRP import MultiModeTransformerRRP  
+from train_nvmd import HybridSpectralNVMD
+from train_transformer import MultiModeTransformerRRP
 
 
 # ============================================================
-#                     Dataset (RRP only)
+#                     Dataset (raw + IMFs)
 # ============================================================
 
-class RRPWindowDataset(Dataset):
+class JointDecompPredictDataset(Dataset):
     """
-    Given a dataframe with an RRP column, returns:
+    For each start index i:
 
-      x_raw:    (1, L)  window of raw RRP values [t, ..., t+L-1]
-      rrp_next: (1,)    RRP at time t+L
+      x_raw:      (1, L)   raw RRP window [i, ..., i+L-1]
+      imfs_true:  (K, L)   VMD IMFs over same window
+      rrp_next:   (1,)     raw RRP at time i+L
     """
-    def __init__(self, df: pd.DataFrame, seq_len: int = 64, rrp_col: str = "RRP"):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        seq_len: int = 256,
+        rrp_col: str = "RRP",
+        K: int = 13,
+    ):
         super().__init__()
         self.L = seq_len
+        self.rrp_col = rrp_col
+        self.K = K
 
         if rrp_col not in df.columns:
             raise ValueError(f"RRP column '{rrp_col}' not in dataframe")
 
-        rrp_np = df[rrp_col].to_numpy(dtype=np.float32)  # (T,)
-        self.rrp = torch.from_numpy(rrp_np)              # (T,)
+        mode_cols = [f"Mode_{i}" for i in range(1, K)] + ["Residual"]
+        for c in mode_cols:
+            if c not in df.columns:
+                raise ValueError(f"Missing mode column '{c}' in dataframe")
+        self.mode_cols = mode_cols
+
+        rrp = df[rrp_col].to_numpy(dtype=np.float32)        # (T,)
+        imfs = df[mode_cols].to_numpy(dtype=np.float32)     # (T, K)
+
+        self.rrp = torch.from_numpy(rrp)                    # (T,)
+        # (T,K) -> (K,T)
+        self.imfs = torch.from_numpy(imfs).transpose(0, 1)  # (K,T)
 
         T = self.rrp.shape[0]
-        # We need rrp[t+L] to exist, so max start index = T-L-1
+        # we need rrp[i+L] to exist
         self.N = max(0, T - self.L - 1)
 
     def __len__(self):
@@ -56,93 +90,166 @@ class RRPWindowDataset(Dataset):
 
     def __getitem__(self, i: int):
         L = self.L
-        # window [i, ..., i+L-1]
-        x_raw = self.rrp[i:i+L]          # (L,)
-        x_raw = x_raw.unsqueeze(0)       # (1, L)  channel-first for NVMD
 
-        # next-step RRP is at time t+L
-        rrp_next = self.rrp[i + L].unsqueeze(0)  # (1,)
+        # raw window (1,L)
+        x_raw = self.rrp[i:i+L].unsqueeze(0)        # (1,L)
 
-        return x_raw, rrp_next
+        # IMF window (K,L)
+        imfs_true = self.imfs[:, i:i+L]             # (K,L)
+
+        # next-step RRP
+        rrp_next = self.rrp[i+L].unsqueeze(0)       # (1,)
+
+        return x_raw, imfs_true, rrp_next
 
 
 # ============================================================
-#                 Training / Evaluation Epochs
+#               Integrated NVMD + Transformer model
+# ============================================================
+
+class NVMDTransformerJoint(nn.Module):
+    """
+    Integrated NVMD + Transformer:
+
+      - NVMD:   x_raw -> imfs_ref (B,K,L), recon_ref (B,1,L), priors
+      - Coupling: x_modes = concat(raw, imfs_ref) -> (B, K+1, L)
+      - Transformer: x_modes -> rrp_hat (B,1)
+    """
+    def __init__(
+        self,
+        K: int = 13,
+        seq_len: int = 256,
+        d_model: int = 128,
+        n_heads: int = 4,
+        num_layers: int = 3,
+        dim_ff: int = 256,
+        dropout: float = 0.1,
+        use_raw_as_mode: bool = True,
+    ):
+        super().__init__()
+        self.K = K
+        self.seq_len = seq_len
+        self.use_raw_as_mode = use_raw_as_mode
+
+        # NVMD decomposer
+        self.decomposer = HybridSpectralNVMD(K=K, signal_len=seq_len)
+
+        # how many channels/modes we feed to the Transformer
+        K_pred = K + 1 if use_raw_as_mode else K
+
+        # Transformer predictor that expects (B, K_pred, L)
+        self.predictor = MultiModeTransformerRRP(
+            K=K_pred,
+            seq_len=seq_len,
+            d_model=d_model,
+            n_heads=n_heads,
+            num_layers=num_layers,
+            dim_ff=dim_ff,
+            dropout=dropout,
+        )
+
+    def forward(self, x_raw: torch.Tensor, return_details: bool = False):
+        """
+        x_raw: (B,1,L)
+
+        Returns:
+            if return_details:
+                (rrp_hat, imfs_ref, recon_ref, smooth_loss, ortho_loss)
+            else:
+                rrp_hat
+        """
+        # NVMD decomposition
+        imfs_ref, recon_ref, imfs_lin, recon_lin = self.decomposer(x_raw)  # (B,K,L), (B,1,L), ...
+
+        # build modes for Transformer
+        if self.use_raw_as_mode:
+            x_modes = torch.cat([x_raw, imfs_ref], dim=1)  # (B,K+1,L)
+        else:
+            x_modes = imfs_ref                            # (B,K,L)
+
+        # prediction
+        rrp_hat = self.predictor(x_modes)  # (B,1)
+
+        # priors on masks
+        smooth_loss = self.decomposer.spectral.spectral_smoothness_loss()
+        ortho_loss  = self.decomposer.spectral.orthogonality_loss()
+
+        if return_details:
+            return rrp_hat, imfs_ref, recon_ref, smooth_loss, ortho_loss
+        else:
+            return rrp_hat
+
+
+# ============================================================
+#                     Training / Eval Epoch
 # ============================================================
 
 def run_epoch(
-    model: nn.Module,
+    model: NVMDTransformerJoint,
     loader: DataLoader,
     device: str,
     optimizer=None,
-    freeze_decomposer: bool = False,
     w_pred: float = 1.0,
-    w_rrp: float = 0.0,
-    w_smooth: float = 0.0,
-    w_ortho: float = 0.0,
+    w_imf: float = 1.0,
+    w_rrp: float = 0.1,
+    w_smooth: float = 0.1,
+    w_ortho: float = 0.1,
     max_grad_norm: float = 10.0,
 ):
     """
-    If optimizer is provided → training, otherwise evaluation.
+    Joint training/eval epoch.
 
-    Model is MultiModeTransformerRRP(use_nvmd=True).
+    Loss = w_pred   * MSE(rrp_hat, rrp_next)
+         + w_imf    * relRMSE(imfs_ref, imfs_true)
+         + w_rrp    * L1(recon_ref, x_raw)
+         + w_smooth * smooth_loss
+         + w_ortho  * ortho_loss
 
-    Forward:
-        x_raw (B,1,L) → model(x_raw, return_nvmd=True) → 
-            rrp_hat (B,1), recon_ref (B,1,L),
-            smooth_loss (scalar), ortho_loss (scalar)
-
-    Loss:
-        w_pred   * MSE(rrp_hat, rrp_next)
-      + w_rrp    * L1(recon_ref, x_raw)
-      + w_smooth * smooth_loss
-      + w_ortho  * ortho_loss
+    Returns: (avg_mse, avg_mae) on prediction.
     """
     is_train = optimizer is not None
     model.train(is_train)
 
-    # Optionally freeze NVMD submodule (during warmup)
-    if freeze_decomposer and hasattr(model, "decomposer"):
-        for p in model.decomposer.parameters():
-            p.requires_grad = False
-    elif hasattr(model, "decomposer"):
-        for p in model.decomposer.parameters():
-            p.requires_grad = True
-
     total_mse = 0.0
     total_mae = 0.0
     n_samples = 0
+    eps = 1e-8
 
-    for x_raw, rrp_next in loader:
-        x_raw    = x_raw.to(device)      # (B,1,L)
-        rrp_next = rrp_next.to(device)   # (B,1)
+    for x_raw, imfs_true, rrp_next in loader:
+        x_raw     = x_raw.to(device)      # (B,1,L)
+        imfs_true = imfs_true.to(device)  # (B,K,L)
+        rrp_next  = rrp_next.to(device)   # (B,1)
 
         if is_train:
             optimizer.zero_grad(set_to_none=True)
 
-        # Forward through integrated NVMD+Transformer
-        # (rrp_hat, recon_ref, smooth_loss, ortho_loss)
-        rrp_hat, recon_ref, smooth_loss, ortho_loss = model(
+        rrp_hat, imfs_ref, recon_ref, smooth_loss, ortho_loss = model(
             x_raw,
-            return_nvmd=True,
+            return_details=True,
         )
 
+        # prediction loss
         mse = F.mse_loss(rrp_hat, rrp_next)
         mae = F.l1_loss(rrp_hat, rrp_next)
 
-        # NVMD regularizers (only contribute when not frozen)
-        if freeze_decomposer:
-            # don't let these influence gradients in warmup
-            loss_rrp    = torch.tensor(0.0, device=device)
-            loss_smooth = torch.tensor(0.0, device=device)
-            loss_ortho  = torch.tensor(0.0, device=device)
-        else:
-            loss_rrp    = F.l1_loss(recon_ref, x_raw)
-            loss_smooth = smooth_loss
-            loss_ortho  = ortho_loss
+        # IMF supervision: relative RMSE
+        delta = imfs_ref - imfs_true           # (B,K,L)
+        num = (delta ** 2).sum(dim=(1, 2))     # (B,)
+        den = (imfs_true ** 2).sum(dim=(1, 2)) + eps
+        rel_rmse = torch.sqrt(num / den)       # (B,)
+        loss_imf = rel_rmse.mean()
 
+        # RRP reconstruction loss
+        loss_rrp = F.l1_loss(recon_ref, x_raw)
+
+        # priors
+        loss_smooth = smooth_loss
+        loss_ortho  = ortho_loss
+
+        # total loss
         loss = (
             w_pred   * mse
+          + w_imf    * loss_imf
           + w_rrp    * loss_rrp
           + w_smooth * loss_smooth
           + w_ortho  * loss_ortho
@@ -151,7 +258,7 @@ def run_epoch(
         if is_train:
             loss.backward()
             if max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
 
         bs = x_raw.size(0)
@@ -182,44 +289,38 @@ def set_seed(seed: int = 1337):
 def main():
     ap = argparse.ArgumentParser()
 
-    # Data
+    # data
     ap.add_argument("--train-csv", type=str, default="VMD_modes_with_residual_2018_2021.csv")
     ap.add_argument("--val-csv",   type=str, default="VMD_modes_with_residual_2021_2022.csv")
     ap.add_argument("--rrp-col",   type=str, default="RRP")
     ap.add_argument("--seq-len",   type=int, default=256)
+    ap.add_argument("--K",         type=int, default=13)
 
-    # NVMD + Transformer
-    ap.add_argument("--K", type=int, default=13, help="Number of modes produced by NVMD")
+    # model hparams
     ap.add_argument("--d-model",    type=int, default=128)
     ap.add_argument("--n-heads",    type=int, default=4)
     ap.add_argument("--num-layers", type=int, default=3)
     ap.add_argument("--dim-ff",     type=int, default=256)
     ap.add_argument("--dropout",    type=float, default=0.1)
 
-    # Optional: initialize decomposer from a separate NVMD checkpoint
-    ap.add_argument("--decomposer_ckpt", type=str, default="",
-                    help="Optional NVMD-only checkpoint to init model.decomposer")
+    # training
+    ap.add_argument("--batch",         type=int,   default=256)
+    ap.add_argument("--epochs",        type=int,   default=50)
+    ap.add_argument("--lr",            type=float, default=1e-3)
+    ap.add_argument("--weight-decay",  type=float, default=1e-2)
+    ap.add_argument("--seed",          type=int,   default=42)
+    ap.add_argument("--num-workers",   type=int,   default=0)
+    ap.add_argument("--max-grad-norm", type=float, default=10.0)
 
-    # Training
-    ap.add_argument("--batch",          type=int,   default=256)
-    ap.add_argument("--warmup_epochs",  type=int,  default=20,
-                    help="Epochs with decomposer frozen (prediction-only).")
-    ap.add_argument("--joint_epochs",   type=int,  default=80,
-                    help="Epochs of joint training (NVMD + Transformer).")
-    ap.add_argument("--lr",             type=float, default=1e-3)
-    ap.add_argument("--weight_decay",   type=float, default=1e-2)
-    ap.add_argument("--seed",           type=int,   default=42)
-    ap.add_argument("--num_workers",    type=int,   default=0)
-    ap.add_argument("--max_grad_norm",  type=float, default=10.0)
-
-    # Loss weights for joint stage
-    ap.add_argument("--w_pred",   type=float, default=1.0)
-    ap.add_argument("--w_rrp",    type=float, default=0.1)
-    ap.add_argument("--w_smooth", type=float, default=0.01)
-    ap.add_argument("--w_ortho",  type=float, default=0.01)
+    # loss weights
+    ap.add_argument("--w-pred",   type=float, default=1.0)
+    ap.add_argument("--w-imf",    type=float, default=0.5)
+    ap.add_argument("--w-rrp",    type=float, default=0.1)
+    ap.add_argument("--w-smooth", type=float, default=0.01)
+    ap.add_argument("--w-ortho",  type=float, default=0.01)
 
     # I/O
-    ap.add_argument("--out", type=str, default="./nvmd_transformer_joint.pt")
+    ap.add_argument("--out", type=str, default="nvmd_transformer_joint_imf.pt")
 
     args = ap.parse_args()
     set_seed(args.seed)
@@ -227,22 +328,28 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
-    # -----------------------------
-    #  Load data
-    # -----------------------------
+    # load dataframes
     df_tr = pd.read_csv(args.train_csv)
     df_va = pd.read_csv(args.val_csv)
 
-    tr_ds = RRPWindowDataset(df_tr, seq_len=args.seq_len, rrp_col=args.rrp_col)
-    va_ds = RRPWindowDataset(df_va, seq_len=args.seq_len, rrp_col=args.rrp_col)
+    tr_ds = JointDecompPredictDataset(
+        df_tr,
+        seq_len=args.seq_len,
+        rrp_col=args.rrp_col,
+        K=args.K,
+    )
+    va_ds = JointDecompPredictDataset(
+        df_va,
+        seq_len=args.seq_len,
+        rrp_col=args.rrp_col,
+        K=args.K,
+    )
 
-    pin = (device == "cuda")
     tr_dl = DataLoader(
         tr_ds,
         batch_size=args.batch,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=pin,
         drop_last=True,
     )
     va_dl = DataLoader(
@@ -250,15 +357,12 @@ def main():
         batch_size=args.batch,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=pin,
     )
 
     print(f"Train windows: {len(tr_ds)}, Val windows: {len(va_ds)}")
 
-    # -----------------------------
-    #  Build model (NVMD inside)
-    # -----------------------------
-    model = MultiModeTransformerRRP(
+    # model
+    model = NVMDTransformerJoint(
         K=args.K,
         seq_len=args.seq_len,
         d_model=args.d_model,
@@ -266,100 +370,25 @@ def main():
         num_layers=args.num_layers,
         dim_ff=args.dim_ff,
         dropout=args.dropout,
-        use_nvmd=True,   # <--- key
+        use_raw_as_mode=True,  # raw RRP as extra mode
     ).to(device)
 
-    # Optionally initialize decomposer from separate NVMD ckpt
-    if args.decomposer_ckpt and os.path.exists(args.decomposer_ckpt):
-        print(f"Loading decomposer initialization from {args.decomposer_ckpt}")
-        dec_ckpt = torch.load(args.decomposer_ckpt, map_location="cpu")
-        if isinstance(dec_ckpt, dict) and "model_state" in dec_ckpt:
-            dec_state = dec_ckpt["model_state"]
-        else:
-            dec_state = dec_ckpt
-        missing, unexpected = model.decomposer.load_state_dict(dec_state, strict=False)
-        print("  decomposer missing:", missing)
-        print("  decomposer unexpected:", unexpected)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
 
     best_val_mae = float("inf")
 
-    # -----------------------------
-    #  Stage 1: Warmup (freeze NVMD)
-    # -----------------------------
-    print("\n===== Stage 1: Warmup (Transformer only, NVMD frozen) =====\n")
-
-    opt_warmup = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-
-    for ep in range(1, args.warmup_epochs + 1):
+    for ep in range(1, args.epochs + 1):
         tr_mse, tr_mae = run_epoch(
             model,
             tr_dl,
             device,
-            optimizer=opt_warmup,
-            freeze_decomposer=True,
-            w_pred=1.0,
-            w_rrp=0.0,
-            w_smooth=0.0,
-            w_ortho=0.0,
-            max_grad_norm=args.max_grad_norm,
-        )
-
-        va_mse, va_mae = run_epoch(
-            model,
-            va_dl,
-            device,
-            optimizer=None,
-            freeze_decomposer=True,
-            w_pred=1.0,
-            w_rrp=0.0,
-            w_smooth=0.0,
-            w_ortho=0.0,
-            max_grad_norm=args.max_grad_norm,
-        )
-
-        print(
-            f"[Warmup {ep:03d}] "
-            f"train MSE={tr_mse:.4f} MAE={tr_mae:.4f} | "
-            f"val MSE={va_mse:.4f} MAE={va_mae:.4f}"
-        )
-
-        if va_mae < best_val_mae:
-            best_val_mae = va_mae
-            torch.save(
-                {
-                    "stage": "warmup",
-                    "epoch": ep,
-                    "val_mae": best_val_mae,
-                    "model_state": model.state_dict(),
-                    "args": vars(args),
-                },
-                args.out,
-            )
-            print(f"  → Saved new best checkpoint (warmup) with val MAE={best_val_mae:.4f} to {args.out}")
-
-    # -----------------------------
-    #  Stage 2: Joint training
-    # -----------------------------
-    print("\n===== Stage 2: Joint (NVMD + Transformer) =====\n")
-
-    opt_joint = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-
-    for ep in range(1, args.joint_epochs + 1):
-        tr_mse, tr_mae = run_epoch(
-            model,
-            tr_dl,
-            device,
-            optimizer=opt_joint,
-            freeze_decomposer=False,
+            optimizer=optimizer,
             w_pred=args.w_pred,
+            w_imf=args.w_imf,
             w_rrp=args.w_rrp,
             w_smooth=args.w_smooth,
             w_ortho=args.w_ortho,
@@ -371,8 +400,8 @@ def main():
             va_dl,
             device,
             optimizer=None,
-            freeze_decomposer=False,
             w_pred=args.w_pred,
+            w_imf=args.w_imf,
             w_rrp=args.w_rrp,
             w_smooth=args.w_smooth,
             w_ortho=args.w_ortho,
@@ -380,7 +409,7 @@ def main():
         )
 
         print(
-            f"[Joint {ep:03d}] "
+            f"[Epoch {ep:03d}] "
             f"train MSE={tr_mse:.4f} MAE={tr_mae:.4f} | "
             f"val MSE={va_mse:.4f} MAE={va_mae:.4f}"
         )
@@ -389,7 +418,6 @@ def main():
             best_val_mae = va_mae
             torch.save(
                 {
-                    "stage": "joint",
                     "epoch": ep,
                     "val_mae": best_val_mae,
                     "model_state": model.state_dict(),
@@ -397,7 +425,7 @@ def main():
                 },
                 args.out,
             )
-            print(f"  → Saved new best checkpoint (joint) with val MAE={best_val_mae:.4f} to {args.out}")
+            print(f"  → Saved new best checkpoint with val MAE={best_val_mae:.4f} to {args.out}")
 
 
 if __name__ == "__main__":
