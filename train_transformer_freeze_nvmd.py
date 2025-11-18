@@ -121,7 +121,7 @@ def run_epoch(
         # ---- Forward through Transformer predictor ----
         rrp_next_hat = predictor(x_raw)   # (B,1)
 
-        print(rrp_next_hat)
+    
 
         # prediction metrics
         mse = F.mse_loss(rrp_next_hat, rrp_next)
