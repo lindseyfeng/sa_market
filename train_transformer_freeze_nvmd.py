@@ -116,12 +116,10 @@ def run_epoch(
             ctx = torch.no_grad()
         else:
             ctx = torch.no_grad() if freeze_decomposer else torch.enable_grad()
-
+        # (ctx currently unused – decomposer forward would go here if needed)
 
         # ---- Forward through Transformer predictor ----
         rrp_next_hat = predictor(x_raw)   # (B,1)
-
-    
 
         # prediction metrics
         mse = F.mse_loss(rrp_next_hat, rrp_next)
@@ -133,9 +131,6 @@ def run_epoch(
 
             # only add decomposer losses when it's actually trainable
             if not freeze_decomposer:
-                # RRP reconstruction loss (force decomposer to stay a good reconstructor)
-
-
                 # spectral regularizers (unsupervised, no IMF GT)
                 loss_smooth = decomposer.spectral.spectral_smoothness_loss()
                 loss_ortho  = decomposer.spectral.orthogonality_loss()
@@ -175,6 +170,54 @@ def run_epoch(
 
     denom = max(n_samples, 1)
     return total_mse / denom, total_mae / denom
+
+
+# ============================================================
+#                     Collect eval predictions
+# ============================================================
+
+def collect_predictions(
+    decomposer: nn.Module,
+    predictor: nn.Module,
+    loader: DataLoader,
+    device: str,
+):
+    """
+    Run over the validation loader and collect:
+        idx (0-based in this loader), rrp_true, rrp_pred, abs_err
+    Returns a list of dicts suitable for pd.DataFrame.
+    """
+    decomposer.eval()
+    predictor.eval()
+
+    rows = []
+    idx = 0
+
+    with torch.no_grad():
+        for x_raw, rrp_next in loader:
+            x_raw = x_raw.to(device)
+            rrp_next = rrp_next.to(device)        # (B,1)
+
+            yhat = predictor(x_raw)               # (B,1)
+
+            # Flatten to 1D for easy looping
+            true_vals = rrp_next.view(-1).cpu().numpy()
+            pred_vals = yhat.view(-1).cpu().numpy()
+
+            for t, p in zip(true_vals, pred_vals):
+                t = float(t)
+                p = float(p)
+                rows.append(
+                    {
+                        "idx": idx,
+                        "rrp_true": t,
+                        "rrp_pred": p,
+                        "abs_err": abs(p - t),
+                    }
+                )
+                idx += 1
+
+    return rows
 
 
 # ============================================================
@@ -299,14 +342,13 @@ def main():
     # -----------------------------
     predictor = EnhancedNVMDTransformer(
         decomposer=decomposer,
-        d_model=128,
-        n_heads=4,
-        num_layers=3,
-        dim_ff=256,
-        dropout=0.1,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        num_layers=args.num_layers,
+        dim_ff=args.dim_ff,
+        dropout=args.dropout,
         use_multi_scale=True,
     ).to(device)
-
 
     best_val_mae = float("inf")
 
@@ -358,6 +400,8 @@ def main():
 
         if va_mae < best_val_mae:
             best_val_mae = va_mae
+
+            # save checkpoint
             torch.save(
                 {
                     "stage": "warmup",
@@ -371,6 +415,12 @@ def main():
                 args.out,
             )
             print(f"  → Saved new best checkpoint (warmup) with val MAE={best_val_mae:.4f} to {args.out}")
+
+            # save evaluation CSV for diagnostics
+            pred_rows = collect_predictions(decomposer, predictor, va_dl, device)
+            csv_path = args.out + ".best_val.csv"
+            pd.DataFrame(pred_rows).to_csv(csv_path, index=False)
+            print(f"  → Saved best-val predictions to {csv_path}")
 
     # -----------------------------
     #  Stage 2: joint training
@@ -420,6 +470,7 @@ def main():
 
         if va_mae < best_val_mae:
             best_val_mae = va_mae
+
             torch.save(
                 {
                     "stage": "joint",
@@ -438,6 +489,12 @@ def main():
                 args.out,
             )
             print(f"  → Saved new best checkpoint (joint) with val MAE={best_val_mae:.4f} to {args.out}")
+
+            # save diagnostic predictions
+            pred_rows = collect_predictions(decomposer, predictor, va_dl, device)
+            csv_path = args.out + ".best_val.csv"
+            pd.DataFrame(pred_rows).to_csv(csv_path, index=False)
+            print(f"  → Saved best-val predictions to {csv_path}")
 
 
 if __name__ == "__main__":
