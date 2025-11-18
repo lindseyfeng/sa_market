@@ -358,11 +358,10 @@ def main():
     ap.add_argument("--dim-ff",         type=int, default=256)
     ap.add_argument("--dropout",        type=float, default=0.1)
 
-    # >>> NEW: optional NVMD init from previous decomposer checkpoint <<<
     ap.add_argument(
         "--nvmd-ckpt",
         type=str,
-        default=None,
+        default="./hybrid_spectral_nvmd.pt",
         help=(
             "Path to a pretrained HybridSpectralNVMD checkpoint "
             "(state_dict) to initialize the decomposer. "
