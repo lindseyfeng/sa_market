@@ -7,6 +7,7 @@
         --seq-len 256 \
         --warmup-epochs 20 \
         --joint-epochs 100 \
+        --decomp-grad-scale 5.0 \
         --out nvmd_transformer_rrp.pt
 """
 
@@ -77,6 +78,7 @@ def run_epoch(
     optimizer=None,
     freeze_decomposer: bool = True,
     max_grad_norm: float = 10.0,
+    decomp_grad_scale: float = 1.0,
 ):
     """
     If optimizer is provided → training, otherwise evaluation.
@@ -89,6 +91,11 @@ def run_epoch(
 
     Loss: MSE on raw RRP.
     Metrics: MSE, MAE (on raw RRP).
+
+    decomp_grad_scale:
+        - Only used when training AND freeze_decomposer=False.
+        - Multiplies decomposer parameter gradients by this factor
+          before gradient clipping & optimizer.step().
     """
     is_train = optimizer is not None
 
@@ -135,7 +142,25 @@ def run_epoch(
         if is_train:
             # use MSE as training loss
             mse.backward()
-            torch.nn.utils.clip_grad_norm_(predictor.parameters(), max_grad_norm)
+
+            # If decomposer is trainable, scale its gradients
+            if not freeze_decomposer and decomp_grad_scale != 1.0:
+                with torch.no_grad():
+                    for p in decomposer.parameters():
+                        if p.grad is not None:
+                            p.grad.mul_(decomp_grad_scale)
+
+            # Gradient clipping
+            if freeze_decomposer:
+                # Only predictor has grads
+                torch.nn.utils.clip_grad_norm_(predictor.parameters(), max_grad_norm)
+            else:
+                # Both decomposer and predictor have grads
+                torch.nn.utils.clip_grad_norm_(
+                    list(decomposer.parameters()) + list(predictor.parameters()),
+                    max_grad_norm,
+                )
+
             optimizer.step()
 
         bs = x_raw.size(0)
@@ -194,6 +219,11 @@ def main():
     ap.add_argument("--seed",           type=int,   default=42)
     ap.add_argument("--num-workers",    type=int,   default=0)
     ap.add_argument("--max-grad-norm",  type=float, default=10.0)
+
+    # Decomposer gradient scaling in joint stage
+    ap.add_argument("--decomp-grad-scale", type=float, default=5.0,
+                    help="Multiplier for decomposer gradients in joint stage "
+                         "(>1.0 makes NVMD move more per step).")
 
     # I/O
     ap.add_argument("--out", type=str, default="./nvmd_transformer_rrp.pt")
@@ -286,6 +316,7 @@ def main():
             optimizer=opt_pred,
             freeze_decomposer=True,
             max_grad_norm=args.max_grad_norm,
+            decomp_grad_scale=1.0,  # not used when frozen
         )
 
         va_mse, va_mae = run_epoch(
@@ -296,6 +327,7 @@ def main():
             optimizer=None,
             freeze_decomposer=True,
             max_grad_norm=args.max_grad_norm,
+            decomp_grad_scale=1.0,
         )
 
         print(
@@ -340,6 +372,7 @@ def main():
             optimizer=opt_joint,
             freeze_decomposer=False,
             max_grad_norm=args.max_grad_norm,
+            decomp_grad_scale=args.decomp_grad_scale,
         )
 
         va_mse, va_mae = run_epoch(
@@ -350,6 +383,7 @@ def main():
             optimizer=None,
             freeze_decomposer=False,
             max_grad_norm=args.max_grad_norm,
+            decomp_grad_scale=1.0,  # no grad in eval
         )
 
         print(
@@ -368,7 +402,8 @@ def main():
                     "predictor_state": predictor.state_dict(),
                     "decomposer_state": decomposer.state_dict(),
                     "args": vars(args),
-                    "notes": "Joint: predictor + decomposer trained on prediction MSE",
+                    "notes": "Joint: predictor + decomposer trained on prediction MSE "
+                             f"(decomp_grad_scale={args.decomp_grad_scale})",
                 },
                 args.out,
             )
