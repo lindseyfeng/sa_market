@@ -56,29 +56,49 @@ On a ridge linear model the gap is 6.2% (14.703 vs 15.674).
 
 ## 3. Interpretability  *(largest measured advantage after leakage)*
 
-`interpret_modes.py`, test year.
+`interpret_modes.py`, test year.  **Figure: `interpretability_nvmd_vs_vmd.png`**
+(`plot_interpretability.py`), four panels -- band structure, energy
+concentration, period coverage, and per-mode ablation.
 
-| | Causal VMD (13 modes) | NVMD v3 (9 modes) |
-|---|---|---|
-| participation ratio | 1.75 | **6.11** |
-| energy in top mode | 74.31% | 28.16% |
-| longest period represented | 20.8 h | **307.2 h** |
-| bandwidth profile | flat ~0.06-0.08 | 0.003 -> 0.19 (scales with centre) |
-| centres ordered | by post-hoc omega sort | **by construction, every window** |
+The VMD column below is now the **tuned** sweep winner (alpha=1000, K=8, section
+10). The untuned alpha=2000/K=12 config is kept alongside it because it is what
+earlier versions of this section reported.
 
-- VMD's "12-mode decomposition" is effectively **1.75 modes**: Mode_1 holds 74%
-  of energy and costs +10.61 MAE to ablate; 10 of 13 modes are removable at
+| | Causal VMD tuned (K=8) | Causal VMD untuned (K=12) | NVMD v3 (9 modes) |
+|---|---|---|---|
+| participation ratio | 1.63 | 1.75 | **6.11** |
+| energy in top mode | 77.36% | 74.31% | **28.16%** |
+| longest period represented | 20.1 h | 20.8 h | **307.2 h** |
+| bandwidth profile | flat 0.062-0.082 | flat ~0.06-0.08 | 0.003 -> 0.19 (scales with centre) |
+| top-mode ablation cost | +10.80 MAE | +10.61 MAE | +0.03 MAE (largest) |
+| modes removable at <0.01 MAE | 6/9 | 10/13 | 8/9 |
+| centres ordered | by post-hoc omega sort | by post-hoc omega sort | **by construction, every window** |
+
+- VMD's "K-mode decomposition" is effectively **1.6 modes**: Mode_1 holds 77% of
+  the energy and costs +10.80 MAE to ablate, while 6 of 9 modes are removable at
   <0.01 MAE.
-- VMD's Mode_1 has bandwidth 0.0627 at centre 0.0240 -- bandwidth 2.6x the
-  centre. That is a smear, not a band.
-- At W=96 VMD has **no mode above 20.8 h** and cannot represent multi-day
-  structure. NVMD's mode 1 sits at 307 h with 18.5% of energy.
+- VMD's Mode_1 has bandwidth 0.0631 at centre 0.0249 -- **bandwidth 2.5x the
+  centre**, so the band spans DC. That is a smear, not a band. VMD's bandwidth is
+  flat regardless of centre; NVMD's scales with centre (constant-Q), stable at
+  Q ~ 0.7-0.9 from mode 3 up.
+- At W=96 VMD has **no mode above 20.1 h** and structurally cannot represent
+  multi-day structure -- weekly behaviour has nowhere to go. NVMD reaches 307 h
+  (12.8 days), 15x further, with 18.5% of energy in that mode.
 - NVMD band table is physically readable: DC / 63 h / 20.5 h (daily) /
   11.0 h (half-daily) / 6.4 / 4.5 / 4.4 / 2.4 h.
 
-Known weakness: NVMD's emitted modes are mutually redundant (8/9 removable at
-<0.01 MAE) because adjacent bands overlap (0.04 bandwidths separation). Broad
-high-frequency masks get dragged down by their low-frequency tails.
+**Tuning VMD for accuracy makes its decomposition worse.** At the sweep-winning
+K=8, top-mode energy *rises* to 77.4% (from 74.3% at K=12) and the participation
+ratio *falls* to 1.63 (from 1.75). VMD therefore faces a tension NVMD does not:
+its most accurate configuration is its least interpretable one.
+
+**Known weakness, stated plainly (panel D).** NVMD *loses* the ablation test.
+Every NVMD mode is removable at <0.01 MAE, because adjacent bands overlap (0.04
+bandwidths separation) and broad high-frequency masks get dragged down by their
+low-frequency tails. But VMD's Mode_1 is indispensable only because it *is* the
+signal -- 77% of the energy in one component. The defensible claim is that NVMD
+wins on **structure and coverage**, not on ablation. Panel D is in the figure
+deliberately: a reviewer will run this test, and it is better to have reported it.
 
 ---
 
