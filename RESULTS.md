@@ -358,3 +358,112 @@ across the 26 non-calendar channels of the 33-channel panel.
    exogenous information helps at short horizons only, and its gain is an
    **upper bound**: the weather is reanalysis, not forecast. That caveat is
    load-bearing here, because claim 1 is itself about leakage.
+
+
+---
+
+## 13. The spatio-temporal extension: NVMD as a richer representation
+
+This is the one axis on which NVMD is not bounded by the section 5 ceiling.
+Sections 5, 8 and 9 all say the same thing -- both decompositions are invertible
+transforms, so neither *adds* information and the achievable gain is bounded by
+conditioning alone. Section 5's own conclusion was: **"to exceed this ceiling you
+need new information, not a better basis."** The exogenous panel is that new
+information, and NVMD can ingest it because it is a learned filter bank with a
+head, not a per-window optimisation over a single series.
+
+### 13.1 What the representation admits
+
+Classical VMD, as used throughout the price-forecasting literature we audit, is
+**univariate**: the objective decomposes one series into K narrow-band modes and
+has no slot for a second channel. NVMD's filter bank runs per channel and the
+per-band coupling block mixes them, so a 33-channel panel is a natural input.
+
+*Scope this honestly:* **MVMD** (Rehman & Aftab 2019) extends VMD to joint
+multi-channel decomposition with shared centre frequencies, and per-channel VMD
+followed by concatenation is a trivial baseline anyone can build. "VMD cannot use
+spatial information" is therefore **not** a defensible sentence. The defensible
+one is: *univariate VMD as used in this literature cannot, and we compare against
+MVMD / per-channel VMD or scope them out explicitly.*
+
+### 13.2 The panel, and the design rule that made it work
+
+`build_compound_panel.py` -> `compound_2018_2022.csv`, 77,397 rows x 33 channels:
+6 demand, 4 interconnector spreads, 3 dispatch-pressure, 12 weather
+(wind@100m / temp / solar at 4 sites), 7 calendar, target = SA1 price.
+
+**Neighbour prices must enter as spreads, not levels.** Interconnectors arbitrage
+levels together when unconstrained (SA1-VIC1 correlation 0.914), so neighbour
+levels are near-duplicates of the target and carry nothing. The first price-only
+spatial attempt produced no gain at all for exactly this reason.
+`spread_SA1_TAS1` is the single strongest channel (+0.513).
+
+### 13.3 The architectural fix: concatenate, do not replace
+
+`SpatioTemporalNVMD.forward` originally returned the target's modes *after*
+per-band mixing -- the mixed modes **replaced** the target's own. That destroys
+the partition of unity (reconstruction error 0.00 -> 1.82) with cross terms
+2-6.5x the self term, so the head never sees a faithful price encoding. It
+corrupts the DC/trend and daily bands, which carry the ~88% of ordinary
+intervals, while the fast bands gain genuine spike information -- so **MAE got
+worse while RMSE got better**, consistently.
+
+The fix (`--concat 1`) keeps the target's own modes untouched and *appends* a
+purely exogenous block (self-weight zeroed), taking the LSTM input from K to 2K.
+The exogenous block is identically zero at initialisation, so training begins as
+exact temporal-only NVMD and can only depart from it if the data pays for it.
+
+Test MAE, 2 seeds, all at the matched 30-epoch / patience-10 budget:
+
+| arm | seed 1 | seed 2 | mean |
+|---|---|---|---|
+| OFF (temporal-only control) | 14.17 | 14.19 | 14.180 |
+| MIX (mixed modes replace own) | 14.73 | 14.54 | 14.635 |
+| **CONCAT (own + exogenous block)** | 13.98 | 14.09 | **14.035** |
+| XFILTER | 14.09 | 13.94 | 14.015 |
+
+Two seeds only. Read the ~0.15 MAE gap as suggestive, not established.
+
+### 13.4 The interpretability payoff -- what VMD cannot say at all
+
+The coupling weights are per band, so the trained model reports **which exogenous
+driver acts at which timescale**. From `concat_run.log`:
+
+| band | period | dominant channels | exogenous share of head input variance |
+|---|---|---|---|
+| 1 | DC | ramp_SA1, cal_year | 92.2% |
+| 3 | 26.3 h | ramp_VIC1, ramp_SA1 | 87.8% |
+| 5 | 6.3 h | demand_NSW1, solar_melbourne | 71.3% |
+| 6 | 3.4 h | demand_NSW1, cal_year | 72.5% |
+| 8 | 1.0 h | ramp_SA1, solar_melbourne | 94.4% |
+
+Interconnector ramp pressure dominates the daily band; solar and demand enter at
+the sub-6-hour bands. **This is a statement no univariate decomposition can make**
+-- not merely "we can use exogenous data" but "this driver acts on this
+timescale." It is a stronger interpretability claim than section 3's, and it is
+structural rather than a margin that can shrink to noise.
+
+*Caveat that cuts against it:* the exogenous block takes 60-95% of the head's
+input variance while buying ~1% MAE. A block that dominates the input and moves
+the metric that little is behaving as redundant conditioning, not new
+information -- consistent with section 5, and it should be said rather than
+buried.
+
+### 13.5 What is proven, and what is not
+
+| statement | status |
+|---|---|
+| NVMD's representation admits exogenous channels; univariate VMD's does not | **Architectural, true** (with the MVMD caveat, 13.1) |
+| The panel must use spreads, not neighbour levels | **Shown** |
+| Concat beats replace; replace breaks the partition of unity | **Shown**, with the mechanism |
+| Per-band coupling localises drivers to timescales | **Shown**, and unique to this representation |
+| Spatial coupling improves accuracy at short horizons | **Suggestive**: -2.21 MAE at h=6, decaying to -0.01 by h=48 (section 11a), 2 seeds |
+| **Spatio-temporal NVMD beats VMD** | **Not run** -- see section 12 for the three-arm design that would settle it |
+
+**The load-bearing caveat.** The weather channels are **reanalysis, not forecast**.
+Deployment would use forecast wind and temperature, which carry error reanalysis
+does not, so every spatial gain here is an **upper bound**. Additionally,
+`merge_asof(direction="nearest", +/-60min)` lets a :30 settlement take a :00
+reading up to 30 minutes ahead. Neither is fatal, but both must be stated in the
+paper: claim 1 is an accusation of leakage, so this project's own exogenous panel
+will be held to precisely that standard.
