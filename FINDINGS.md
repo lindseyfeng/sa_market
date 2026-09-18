@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-18 12:53*
+*generated 2026-09-18 13:14*
 
 ## Summary
 
@@ -43,48 +43,110 @@ A factor of **600 to 180,000**. The point is not speed for its own sake: the 18-
 
 ## 3. The architecture
 
-The decomposition is a differentiable layer, not a preprocessing step. Each mode is parameterised by a centre frequency and a bandwidth -- the same two quantities VMD solves for -- but they are *fixed across windows* rather than re-solved per window.
+A **learnable frequency-domain filter bank placed inside the forecaster**. In one line:
+
+$$x \;\rightarrow\; \mathrm{rFFT} \;\rightarrow\; K \text{ Gaussian bands} \;\rightarrow\; \mathrm{irFFT} \;\rightarrow\; K \text{ modes} \;\rightarrow\; \mathrm{BiLSTM} \;\rightarrow\; \hat y$$
+
+**1. The input window.** $x \in \mathbb{R}^{B\times 1\times L}$, with $L=96$ half-hourly steps.
+
+**2. Into the frequency domain.** An rFFT gives $X(f)$. The split is decided in frequency, not in time: the model decides which frequency belongs to which mode.
+
+**3. $K$ Gaussian bands.** Each mode carries a centre $c_k$ and a bandwidth $b_k$, giving an unnormalised mask
+
+$$G_k(f) = \exp\!\Big(-\frac{(f-c_k)^2}{2b_k^2}\Big)$$
+
+The centres are **not** free parameters. They are built as
+
+$$\text{gap logits } \theta \;\rightarrow\; \mathrm{softmax} \;\rightarrow\; \mathrm{cumsum} \;\rightarrow\; \text{rescaled to } [0,\tfrac12]$$
+
+which forces $c_1 < c_2 < \dots < c_K$ and pins $c_1 = 0$, so the first mode is a dedicated trend and low-frequency channel.
+
+**4. Normalise the masks.** At every frequency,
+
+$$M_k(f) = \frac{G_k(f)}{\sum_{j=1}^{K} G_j(f)}, \qquad \text{so} \qquad \sum_{k=1}^{K} M_k(f) = 1 \;\; \forall f$$
+
+That is a **partition of unity**.
+
+**5. The modes.** $X_k(f) = M_k(f)\,X(f)$, then $z_k = \mathrm{irFFT}(X_k)$. Because the masks sum to one,
+
+$$\sum_{k=1}^{K} z_k = x$$
+
+The decomposition is **lossless**, so no residual channel is needed and none can become a junk dump. Measured reconstruction error is 4.8e-07, which is float32 round-off.
+
+**6. Forecast.** The $K$ modes go to a 2-layer bidirectional LSTM with hidden size 128, then a $256 \rightarrow 128 \rightarrow 1$ head.
+
+### What "fixed across windows" does and does not mean
+
+It does **not** mean the band parameters are untrained. It means they are **global model parameters**: learned through the forecast loss, but shared by every window. VMD re-solves a fresh set of modes for each window; this learns one set and applies it everywhere.
+
+| | causal VMD | this layer |
+|---|---|---|
+| where the bands come from | an optimisation solved per window | global parameters shared across all windows |
+| where it sits | preprocessing | inside the forecaster |
+| mode identity | mode $k$ can mean different things in different windows | mode $k$ has a stable frequency meaning |
+| what it optimises | a decomposition objective, separate from the forecast | the forecast loss, end to end |
+
+Three structural guarantees follow, none of them a penalty term:
+
+1. centres strictly increasing, so modes cannot swap order;
+2. the first mode pinned to DC, so the trend always has a channel;
+3. exact reconstruction, so no junk residual channel exists.
+
+So it is not a deep neural decomposer. It is **a learnable frequency-domain filter bank with hard frequency-ordering and reconstruction constraints, trained end to end by the forecasting task**.
+
+### Where the parameters actually are
+
+| component | trainable parameters |
+|---|---:|
+| the bands ($\theta$ and $\beta$, 8 each) | **16** |
+| BiLSTM | 536,576 |
+| head | 33,025 |
+| total | 627,265 |
+
+The decomposition is **0.0026%** of the model. Whatever it contributes is structural, not capacity. Two further facts from the code, both relevant to how the result should be stated:
+
+- With `adapt=0` the masks have shape $(1, K, F)$, not $(B, K, F)$. They do not depend on the input at all, so the decomposition is a **fixed linear operator** -- eight filters applied by circular convolution. An input-adaptive variant was tested and lost.
+- The layer still carries an unused `SignalEncoder` and `gap_head` totalling **57,640 parameters**, dead when `adapt=0`. They inflate any reported parameter count by ~9% and should be deleted or gated.
+
+Section 7 measures what those 16 parameters are worth: training them rather than hard-coding them moves test MAE by **0.002**, against a seed spread of 0.11. The layer pays; the learning does not.
 
 ```mermaid
 flowchart LR
   X["price window<br/>x : (B, 1, L)"] --> F["rFFT"]
-  G["gap logits (K)"] --> SM["softmax -> cumsum<br/>-> rescale to [0, 0.5]"]
+  G["gap logits θ (K)"] --> SM["softmax → cumsum<br/>→ rescale to [0, ½]"]
   SM --> C["centres c_k<br/>strictly increasing<br/>c_1 = DC"]
-  BW["log bandwidth (K)"] --> B["bandwidths bw_k<br/>scaled to local gap"]
+  BW["log bandwidth β (K)"] --> B["widths b_k<br/>tied to the local gap"]
   C --> M["Gaussian masks<br/>normalised to a<br/>partition of unity"]
   B --> M
   F --> MUL["multiply"]
   M --> MUL
   MUL --> I["irFFT"]
   I --> Z["K modes<br/>sum exactly to x"]
-  Z --> L1["BiLSTM 128 x 2"]
-  L1 --> H["128 -> 1"]
-  H --> Y["y-hat"]
+  Z --> L1["BiLSTM 128 × 2"]
+  L1 --> H["256 → 128 → 1"]
+  H --> Y["ŷ"]
 ```
 
-Three properties hold **by construction**, which is what v2 lacked:
+### The spatial variant
 
-| property | how | why it mattered |
-|---|---|---|
-| centres strictly increasing | cumsum of a softmax | v2 preserved channel order in only 24% of windows |
-| mode 1 pinned to DC | first cumulative gap is zero | v2's lowest learned centre was 0.098 against VMD's 0.002, so trend had no channel |
-| modes sum exactly to the input | masks normalised to a partition of unity | no residual channel, and none can become a junk dump |
+The same bank runs on every channel of the panel -- NEM regional demand, interconnector spreads, weather at four sites, calendar terms, 33 in all. After decomposition, one $R \times R$ mixing matrix $A_k$ **per frequency band** lets channels exchange information only within the same band, so a 6-hour wind ramp cannot leak into the 3-day price trend.
 
-The spatial variant adds one R x R mixing matrix **per frequency band**, identity-initialised, so at step 0 it is exactly the temporal model. In `concat` mode the target's own modes pass through untouched and a purely-exogenous block is appended, taking the head from K to 2K inputs.
+The target's own $K$ modes are carried through **untouched**, and a purely exogenous block of $K$ modes is appended, giving the LSTM $2K$ input channels. $A_k = I + \Delta$ with $\Delta$ zero-initialised and shape $(K, R, R)$, so at step 0 the model is exactly the temporal one and can only depart from it if the data pays. That adds 8,704 parameters.
 
 ```mermaid
 flowchart LR
   P["panel<br/>(B, R, L)"] --> BK["shared filter bank<br/>per channel"]
   BK --> MM["modes (B, R, K, L)"]
-  MM --> OWN["target's own K modes<br/>lossless"]
-  MM --> CP["per-band coupling A_k<br/>self weight zeroed"]
+  MM --> OWN["target's own K modes<br/>lossless, untouched"]
+  MM --> CP["per-band mixing A_k<br/>self weight zeroed"]
   CP --> EXO["exogenous block (B, K, L)<br/>zero at init"]
-  OWN --> CAT["concat -> 2K"]
+  OWN --> CAT["concat → 2K channels"]
   EXO --> CAT
   CAT --> LS["BiLSTM + head"]
 ```
 
-What the earlier design got wrong: the mixed modes **replaced** the target's own. That destroys the partition of unity -- reconstruction error 0.00 to 1.82, with cross terms 2-6.5x the self term -- so the head never saw a faithful price encoding. It corrupted the DC and daily bands, which carry the ~88% of ordinary intervals, while the fast bands gained real spike information. **MAE got worse while RMSE got better**, consistently, and the concat fix is what separated the two.
+An earlier version let the mixed modes **replace** the target's own. That destroys the partition of unity -- reconstruction error 0.00 to 1.82, cross terms 2-6.5x the self term -- so the head never saw a faithful price encoding. It corrupted the DC and daily bands, which carry ~88% of ordinary intervals, while the fast bands gained real spike information. **MAE got worse while RMSE got better**, consistently. Section 9 has what the concat form is actually worth.
+
 
 ## 4. Why the classical bands underperform: the physics, not the algorithm
 
@@ -213,7 +275,7 @@ Two ways to deliver a decomposition to a sequence model:
 | `vmd_price_res` | re-solved | precomputed | 31.7% | **14.382** ± 0.082 | 2 |
 | `wpt` | fixed | precomputed | 2.7% | **14.344** ± 0.000 | 1 |
 | `ewt` | re-solved | precomputed | 58.4% | **14.305** ± 0.061 | 2 |
-| `emd` | re-solved | precomputed | 41.1% | **14.817** ± 0.000 | 1 |
+| `emd` | re-solved | precomputed | 41.1% | **14.659** ± 0.223 | 2 |
 
 Every internal run lands in **14.106-14.221**; every precomputed run lands in **14.262-14.817**. No overlap. The gap between the groups is larger than the seed spread within either.
 
@@ -304,16 +366,17 @@ Any claim of the form "our decomposition beats VMD by x%" that is not paired acr
 
 | experiment | purpose | done |
 |---|---|---:|
-| zoo | architecture and decomposition families, 3 seeds | 13/24 |
+| zoo | architecture and decomposition families, 3 seeds | 14/24 |
 | dose | one filter bank, churn injected as a controlled dial; now a *negative* control for the retracted hypothesis | 0/12 |
-| spatial 2x2 | horizon (1 vs 6) x exogenous window (trailing vs forward) | 3/12 |
+| spatial 2x2 | horizon (1 vs 6) x exogenous window (trailing vs forward) | 5/12 |
 
 ### spatial 2x2
 
 | config | test MAE | gain vs price-only |
 |---|---:|---:|
 | `h1_price` | 14.277 ± 0.157 | -- |
-| `h6_price` | 25.966 ± 0.000 | -- |
+| `h6_price` | 26.024 ± 0.081 | -- |
+| `h6_back` | 23.581 ± 0.000 | -2.443 |
 
 ## 12. Caveats
 

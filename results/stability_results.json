@@ -154,5 +154,17 @@
     "test_rmse_cherry": 26.06013524772323,
     "epoch_cherry": 10,
     "n_feat": 9
+  },
+  {
+    "arm": "emd",
+    "seed": 2,
+    "val_mae": 14.104452754540233,
+    "test_mae": 14.501616639072456,
+    "test_rmse": 26.37348808217235,
+    "epoch": 10,
+    "test_mae_cherry": 14.430380974926996,
+    "test_rmse_cherry": 25.922082490340127,
+    "epoch_cherry": 16,
+    "n_feat": 9
   }
 ]

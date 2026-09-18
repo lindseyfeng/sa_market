@@ -105,57 +105,134 @@ A("\nA factor of **600 to 180,000**. The point is not speed for its own sake: "
   "the other**, which is what makes a fair comparison possible at all.")
 
 A("\n## 3. The architecture\n")
-A("The decomposition is a differentiable layer, not a preprocessing step. "
-  "Each mode is parameterised by a centre frequency and a bandwidth -- the same "
-  "two quantities VMD solves for -- but they are *fixed across windows* rather "
-  "than re-solved per window.\n")
+A("A **learnable frequency-domain filter bank placed inside the forecaster**. "
+  "In one line:\n")
+A("$$x \\;\\rightarrow\\; \\mathrm{rFFT} \\;\\rightarrow\\; K "
+  "\\text{ Gaussian bands} \\;\\rightarrow\\; \\mathrm{irFFT} "
+  "\\;\\rightarrow\\; K \\text{ modes} \\;\\rightarrow\\; "
+  "\\mathrm{BiLSTM} \\;\\rightarrow\\; \\hat y$$\n")
+
+A("**1. The input window.** $x \\in \\mathbb{R}^{B\\times 1\\times L}$, "
+  "with $L=96$ half-hourly steps.\n")
+
+A("**2. Into the frequency domain.** An rFFT gives $X(f)$. The split is "
+  "decided in frequency, not in time: the model decides which frequency "
+  "belongs to which mode.\n")
+
+A("**3. $K$ Gaussian bands.** Each mode carries a centre $c_k$ and a "
+  "bandwidth $b_k$, giving an unnormalised mask\n")
+A("$$G_k(f) = \\exp\\!\\Big(-\\frac{(f-c_k)^2}{2b_k^2}\\Big)$$\n")
+A("The centres are **not** free parameters. They are built as\n")
+A("$$\\text{gap logits } \\theta \\;\\rightarrow\\; "
+  "\\mathrm{softmax} \\;\\rightarrow\\; \\mathrm{cumsum} "
+  "\\;\\rightarrow\\; \\text{rescaled to } [0,\\tfrac12]$$\n")
+A("which forces $c_1 < c_2 < \\dots < c_K$ and pins $c_1 = 0$, so the first "
+  "mode is a dedicated trend and low-frequency channel.\n")
+
+A("**4. Normalise the masks.** At every frequency,\n")
+A("$$M_k(f) = \\frac{G_k(f)}{\\sum_{j=1}^{K} G_j(f)}, \\qquad "
+  "\\text{so} \\qquad \\sum_{k=1}^{K} M_k(f) = 1 \\;\\; \\forall f$$\n")
+A("That is a **partition of unity**.\n")
+
+A("**5. The modes.** $X_k(f) = M_k(f)\\,X(f)$, then $z_k = "
+  "\\mathrm{irFFT}(X_k)$. Because the masks sum to one,\n")
+A("$$\\sum_{k=1}^{K} z_k = x$$\n")
+A("The decomposition is **lossless**, so no residual channel is needed and "
+  "none can become a junk dump. Measured reconstruction error is 4.8e-07, "
+  "which is float32 round-off.\n")
+
+A("**6. Forecast.** The $K$ modes go to a 2-layer bidirectional LSTM with "
+  "hidden size 128, then a $256 \\rightarrow 128 \\rightarrow 1$ head.\n")
+
+A("### What \"fixed across windows\" does and does not mean\n")
+A("It does **not** mean the band parameters are untrained. It means they are "
+  "**global model parameters**: learned through the forecast loss, but shared "
+  "by every window. VMD re-solves a fresh set of modes for each window; this "
+  "learns one set and applies it everywhere.\n")
+A("| | causal VMD | this layer |")
+A("|---|---|---|")
+A("| where the bands come from | an optimisation solved per window | global "
+  "parameters shared across all windows |")
+A("| where it sits | preprocessing | inside the forecaster |")
+A("| mode identity | mode $k$ can mean different things in different windows | "
+  "mode $k$ has a stable frequency meaning |")
+A("| what it optimises | a decomposition objective, separate from the forecast "
+  "| the forecast loss, end to end |")
+A("\nThree structural guarantees follow, none of them a penalty term:\n")
+A("1. centres strictly increasing, so modes cannot swap order;")
+A("2. the first mode pinned to DC, so the trend always has a channel;")
+A("3. exact reconstruction, so no junk residual channel exists.\n")
+A("So it is not a deep neural decomposer. It is **a learnable frequency-domain "
+  "filter bank with hard frequency-ordering and reconstruction constraints, "
+  "trained end to end by the forecasting task**.\n")
+
+A("### Where the parameters actually are\n")
+A("| component | trainable parameters |")
+A("|---|---:|")
+A("| the bands ($\\theta$ and $\\beta$, 8 each) | **16** |")
+A("| BiLSTM | 536,576 |")
+A("| head | 33,025 |")
+A("| total | 627,265 |")
+A("\nThe decomposition is **0.0026%** of the model. Whatever it contributes is "
+  "structural, not capacity. Two further facts from the code, both relevant to "
+  "how the result should be stated:\n")
+A("- With `adapt=0` the masks have shape $(1, K, F)$, not $(B, K, F)$. They do "
+  "not depend on the input at all, so the decomposition is a **fixed linear "
+  "operator** -- eight filters applied by circular convolution. An "
+  "input-adaptive variant was tested and lost.")
+A("- The layer still carries an unused `SignalEncoder` and `gap_head` totalling "
+  "**57,640 parameters**, dead when `adapt=0`. They inflate any reported "
+  "parameter count by ~9% and should be deleted or gated.\n")
+A("Section 7 measures what those 16 parameters are worth: training them rather "
+  "than hard-coding them moves test MAE by **0.002**, against a seed spread of "
+  "0.11. The layer pays; the learning does not.\n")
+
 A("```mermaid")
 A("flowchart LR")
 A("  X[\"price window<br/>x : (B, 1, L)\"] --> F[\"rFFT\"]")
-A("  G[\"gap logits (K)\"] --> SM[\"softmax -> cumsum<br/>-> rescale to [0, 0.5]\"]")
+A("  G[\"gap logits θ (K)\"] --> SM[\"softmax → cumsum<br/>→ rescale to [0, ½]\"]")
 A("  SM --> C[\"centres c_k<br/>strictly increasing<br/>c_1 = DC\"]")
-A("  BW[\"log bandwidth (K)\"] --> B[\"bandwidths bw_k<br/>scaled to local gap\"]")
+A("  BW[\"log bandwidth β (K)\"] --> B[\"widths b_k<br/>tied to the local gap\"]")
 A("  C --> M[\"Gaussian masks<br/>normalised to a<br/>partition of unity\"]")
 A("  B --> M")
 A("  F --> MUL[\"multiply\"]")
 A("  M --> MUL")
 A("  MUL --> I[\"irFFT\"]")
 A("  I --> Z[\"K modes<br/>sum exactly to x\"]")
-A("  Z --> L1[\"BiLSTM 128 x 2\"]")
-A("  L1 --> H[\"128 -> 1\"]")
-A("  H --> Y[\"y-hat\"]")
+A("  Z --> L1[\"BiLSTM 128 × 2\"]")
+A("  L1 --> H[\"256 → 128 → 1\"]")
+A("  H --> Y[\"ŷ\"]")
 A("```")
-A("\nThree properties hold **by construction**, which is what v2 lacked:\n")
-A("| property | how | why it mattered |")
-A("|---|---|---|")
-A("| centres strictly increasing | cumsum of a softmax | v2 preserved channel "
-  "order in only 24% of windows |")
-A("| mode 1 pinned to DC | first cumulative gap is zero | v2\'s lowest learned "
-  "centre was 0.098 against VMD\'s 0.002, so trend had no channel |")
-A("| modes sum exactly to the input | masks normalised to a partition of unity | "
-  "no residual channel, and none can become a junk dump |")
-A("\nThe spatial variant adds one R x R mixing matrix **per frequency band**, "
-  "identity-initialised, so at step 0 it is exactly the temporal model. In "
-  "`concat` mode the target\'s own modes pass through untouched and a "
-  "purely-exogenous block is appended, taking the head from K to 2K inputs.\n")
+
+A("\n### The spatial variant\n")
+A("The same bank runs on every channel of the panel -- NEM regional demand, "
+  "interconnector spreads, weather at four sites, calendar terms, 33 in all. "
+  "After decomposition, one $R \\times R$ mixing matrix $A_k$ **per frequency "
+  "band** lets channels exchange information only within the same band, so a "
+  "6-hour wind ramp cannot leak into the 3-day price trend.\n")
+A("The target\'s own $K$ modes are carried through **untouched**, and a purely "
+  "exogenous block of $K$ modes is appended, giving the LSTM $2K$ input "
+  "channels. $A_k = I + \\Delta$ with $\\Delta$ zero-initialised and shape "
+  "$(K, R, R)$, so at step 0 the model is exactly the temporal one and can only "
+  "depart from it if the data pays. That adds 8,704 parameters.\n")
 A("```mermaid")
 A("flowchart LR")
 A("  P[\"panel<br/>(B, R, L)\"] --> BK[\"shared filter bank<br/>per channel\"]")
 A("  BK --> MM[\"modes (B, R, K, L)\"]")
-A("  MM --> OWN[\"target's own K modes<br/>lossless\"]")
-A("  MM --> CP[\"per-band coupling A_k<br/>self weight zeroed\"]")
+A("  MM --> OWN[\"target's own K modes<br/>lossless, untouched\"]")
+A("  MM --> CP[\"per-band mixing A_k<br/>self weight zeroed\"]")
 A("  CP --> EXO[\"exogenous block (B, K, L)<br/>zero at init\"]")
-A("  OWN --> CAT[\"concat -> 2K\"]")
+A("  OWN --> CAT[\"concat → 2K channels\"]")
 A("  EXO --> CAT")
 A("  CAT --> LS[\"BiLSTM + head\"]")
 A("```")
-A("\nWhat the earlier design got wrong: the mixed modes **replaced** the "
-  "target\'s own. That destroys the partition of unity -- reconstruction error "
-  "0.00 to 1.82, with cross terms 2-6.5x the self term -- so the head never saw "
-  "a faithful price encoding. It corrupted the DC and daily bands, which carry "
-  "the ~88% of ordinary intervals, while the fast bands gained real spike "
-  "information. **MAE got worse while RMSE got better**, consistently, and the "
-  "concat fix is what separated the two.")
+A("\nAn earlier version let the mixed modes **replace** the target\'s own. "
+  "That destroys the partition of unity -- reconstruction error 0.00 to 1.82, "
+  "cross terms 2-6.5x the self term -- so the head never saw a faithful price "
+  "encoding. It corrupted the DC and daily bands, which carry ~88% of ordinary "
+  "intervals, while the fast bands gained real spike information. **MAE got "
+  "worse while RMSE got better**, consistently. Section 9 has what the concat "
+  "form is actually worth.\n")
 
 A("\n## 4. Why the classical bands underperform: the physics, not the algorithm\n")
 A("This section is what makes the later null results legible. Swapping "
