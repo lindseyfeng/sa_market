@@ -59,7 +59,8 @@ A(f"| 3 | Putting the decomposition **inside** the forecaster beats the "
 A("| 4 | Classical modes underperform because of **what the bands physically "
   "are**, not because of which algorithm produced them | VMD\'s lowest band is "
   "2.5x wider than its own centre, so it smears across DC; the decomposition "
-  "is effectively 1.6 modes; at window 96 nothing above 20.1 h exists. Vary "
+  "is effectively 1.6 modes; its slowest resolvable band is the daily cycle "
+  "itself, so everything slower falls into that smear. Vary "
   "the algorithm instead and nothing moves: five families within 0.3%, learned "
   "and hard-coded banks within 0.002, churn spanning 26x with no effect | "
   "**Supported** |")
@@ -164,7 +165,8 @@ A("| | causal VMD, tuned K=8 | NVMD v3, 9 modes |")
 A("|---|---:|---:|")
 A("| participation ratio | 1.63 | **6.11** |")
 A("| energy in top mode | 77.36% | **28.16%** |")
-A("| longest period represented | 20.1 h | **307.2 h** |")
+A("| slowest **resolvable** band (window is 48 h) | 21.8 h | **26.9 h** |")
+A("| bands slower than the daily cycle | 0 | **1**, plus a trend slot |")
 A("| top-mode ablation cost | +10.80 MAE | +0.03 MAE |")
 A("| centres ordered | post-hoc omega sort | **by construction, every window** |")
 A("\n**Defect 1: the lowest band is not a band.** VMD\'s mode 1 has bandwidth "
@@ -175,9 +177,27 @@ A("\n**Defect 1: the lowest band is not a band.** VMD\'s mode 1 has bandwidth "
 A("**Defect 2: K modes are not K modes.** Participation ratio 1.63. Mode 1 "
   "holds 77% of the energy and costs +10.80 MAE to ablate, while 6 of 9 come "
   "out at under 0.01 MAE. You ask for eight bands and get about 1.6.\n")
-A("**Defect 3: the long periods do not exist.** At window 96 VMD has **no mode "
-  "above 20.1 h**, so multi-day and weekly structure has nowhere to go. The "
-  "bank reaches 307 h, 15x further, and puts 18.5% of its energy there.\n")
+A("**Defect 3: everything slower than a day lands in the smear.** A 96-sample "
+  "window at half-hourly sampling is **48 hours long**, so nothing slower than "
+  "that is a resolvable oscillation. Inside that limit VMD\'s slowest band is "
+  "centred at **21.8 h** -- the daily cycle is its slowest channel, and "
+  "everything below that frequency falls into the mode-1 smear from defect 1. "
+  "The bank\'s slowest resolvable band sits at **26.9 h**, with a separate "
+  "sub-resolution slot at 75 h, so slow drift and the daily cycle occupy "
+  "different channels instead of being merged into one.\n")
+A("*Correction to `RESULTS.md` section 3, which reports a \"longest period "
+  "represented\" of 307.2 h for the 9-mode configuration and calls it 15x "
+  "VMD\'s reach. A 48-hour window cannot resolve a 307-hour period. That "
+  "number describes a filter\'s nominal centre, not resolvable content, and "
+  "overstates the difference. The defensible version is the one above.*\n")
+A("![drift and coverage](figures/drift_and_coverage.png)\n")
+A("*Left: band centres over 300 consecutive windows. VMD re-solves and the "
+  "centres wander -- 12.0% of a band gap per step, crossing half a gap in "
+  "30.8% of steps -- while the bank\'s are flat lines because they are written "
+  "down once. Right: the period each band is tuned to. Everything in the "
+  "shaded region is slower than the window itself, so it is a trend slot "
+  "rather than an oscillation; VMD puts one band there and the bank two. "
+  "Regenerate with `python3 -m report.plot_drift`.*")
 A("These are properties of the **modes**, and every classical method we tested "
   "shares them. That is why sections 7, 8 and 10 come back empty: they vary "
   "the *algorithm* while the physics of the resulting bands stays put. The one "
@@ -189,12 +209,8 @@ A("$$\\min_{\\{u_k\\},\\{\\omega_k\\}} \\sum_k \\Big\\| "
   "\\partial_t\\big[(\\delta(t) + \\tfrac{j}{\\pi t}) * u_k(t)\\big]"
   "e^{-j\\omega_k t} \\Big\\|_2^2 \\quad \\text{s.t.} \\quad "
   "\\sum_k u_k = f$$\n")
-A("The objective is **narrowbandness per window**. Nothing in it constrains "
-  "where the bands sit, whether they overlap, whether one of them reaches DC, "
-  "or whether this window\'s mode 3 is the same filter as the last "
-  "window\'s. Those are all left to whatever the ADMM iteration converges to, "
-  "which is why the measured centres move 12.4% of a band gap between adjacent "
-  "windows.\n")
+A("The objective is narrowbandness per window, and the bands are whatever "
+  "the iteration converges to.\n")
 A("The bank instead **parameterises** the same two quantities and fixes them:\n")
 A("$$c_k = \\frac{1}{2}\\cdot\\frac{\\sum_{j\\le k}g_j - g_1}"
   "{\\sum_j g_j - g_1}, \\qquad g = \\mathrm{softmax}(\\theta), "
@@ -202,16 +218,30 @@ A("$$c_k = \\frac{1}{2}\\cdot\\frac{\\sum_{j\\le k}g_j - g_1}"
 A("$$m_k(f) = \\frac{\\exp\\!\\big(-\\tfrac12 (f-c_k)^2/b_k^2\\big)}"
   "{\\sum_{k\'} \\exp\\!\\big(-\\tfrac12 (f-c_{k\'})^2/b_{k\'}^2\\big)}, "
   "\\qquad u_k = \\mathcal{F}^{-1}\\!\\big[m_k \\odot \\mathcal{F}f\\big]$$\n")
-A("Three things follow immediately, and none of them is a penalty term:\n")
-A("- $c_k$ is a cumulative sum of a softmax, so $c_1 = 0$ (a band **is** at DC) "
-  "and $c_1 < c_2 < \\dots < c_K = \\tfrac12$ for any $\\theta$. Mode "
-  "identity cannot scramble.")
-A("- the masks are normalised across $k$, so $\\sum_k m_k(f) = 1$ for every "
-  "$f$ and therefore $\\sum_k u_k = f$ **exactly**. No residual channel, and "
-  "none can become a junk dump.")
-A("- $b_k$ is tied to the local gap $\\tfrac12(c_{k+1}-c_{k-1})$, so width "
-  "scales with centre. That is the constant-Q property VMD\'s flat bandwidth "
-  "lacks.\n")
+A("Writing the bands down rather than solving for them buys a set of "
+  "guarantees, none of which is a penalty term and none of which the "
+  "variational form provides:\n")
+A("| property | fixed bank | causal VMD |")
+A("|---|---|---|")
+A("| a band exists at DC | **yes** -- $c_1 = 0$ by construction | no; measured "
+  "lowest centre 0.0001 with width 0.0631, so the band spans DC rather than "
+  "sitting on it |")
+A("| centres ordered, identity stable across windows | **yes** -- $c_k$ is a "
+  "cumsum of a softmax, so $c_1 < \\dots < c_K$ for any $\\theta$ | no; "
+  "centres move 12.4% of a band gap between adjacent windows and cross half a "
+  "gap in 8.2% of steps |")
+A("| modes sum exactly to the input | **yes** -- $\\sum_k m_k(f) = 1$ for "
+  "every $f$, so no residual channel and none can become a junk dump | no; the "
+  "residual is 8.5-9.5% of price sigma |")
+A("| width scales with centre (constant-Q) | **yes** -- $b_k$ tied to the "
+  "local gap $\\tfrac12(c_{k+1}-c_{k-1})$, Q ~ 0.8-1.9 | no; width is flat "
+  "in centre, so Q runs 0.42 to 7.16 |")
+A("| resolution follows the signal\'s energy | **yes** -- geometric spacing "
+  "puts five of eight bands below $f = 0.08$, where 73% of the power is | no; "
+  "near-uniform spacing puts three there and five where there is almost "
+  "nothing |")
+A("\nThese are properties of the construction, not results we tuned for. They "
+  "hold for any $\\theta$, on any signal, in every window.\n")
 A("![band comparison](figures/band_comparison.png)\n")
 A("*Left: causal VMD\'s bank, with bars marking how far each centre drifts "
   "between adjacent windows. Its lowest bands are broad plateaus spanning DC "

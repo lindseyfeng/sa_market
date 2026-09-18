@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-18 12:29*
+*generated 2026-09-18 12:53*
 
 ## Summary
 
@@ -8,8 +8,8 @@
 |---|---|---|---|
 | 1 | The published gains from VMD-based price forecasting are **leakage**, not decomposition | per-mode AR(48) probe, capacity-irrelevance test, and a reproduction of the original 7.11 MAE | **Strong. This is the headline** |
 | 2 | A band decomposition can be had at 10^3-10^5x lower cost | 0.1 s/year against 59-18,178 s/year | **Strong** |
-| 3 | Putting the decomposition **inside** the forecaster beats the classical decompose-then-forecast pipeline | internal 14.106-14.221 vs precomputed 14.305-14.817, no overlap, same filter bank | **Supported**, 2 seeds |
-| 4 | Classical modes underperform because of **what the bands physically are**, not because of which algorithm produced them | VMD's lowest band is 2.5x wider than its own centre, so it smears across DC; the decomposition is effectively 1.6 modes; at window 96 nothing above 20.1 h exists. Vary the algorithm instead and nothing moves: five families within 0.3%, learned and hard-coded banks within 0.002, churn spanning 26x with no effect | **Supported** |
+| 3 | Putting the decomposition **inside** the forecaster beats the classical decompose-then-forecast pipeline | internal 14.106-14.221 vs precomputed 14.262-14.817, no overlap, same filter bank | **Supported**, 2 seeds |
+| 4 | Classical modes underperform because of **what the bands physically are**, not because of which algorithm produced them | VMD's lowest band is 2.5x wider than its own centre, so it smears across DC; the decomposition is effectively 1.6 modes; its slowest resolvable band is the daily cycle itself, so everything slower falls into that smear. Vary the algorithm instead and nothing moves: five families within 0.3%, learned and hard-coded banks within 0.002, churn spanning 26x with no effect | **Supported** |
 | 5 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does not | **Fails as stated.** The line is still open, section 9 |
 
 ## 1. The leakage finding
@@ -94,7 +94,8 @@ This section is what makes the later null results legible. Swapping decompositio
 |---|---:|---:|
 | participation ratio | 1.63 | **6.11** |
 | energy in top mode | 77.36% | **28.16%** |
-| longest period represented | 20.1 h | **307.2 h** |
+| slowest **resolvable** band (window is 48 h) | 21.8 h | **26.9 h** |
+| bands slower than the daily cycle | 0 | **1**, plus a trend slot |
 | top-mode ablation cost | +10.80 MAE | +0.03 MAE |
 | centres ordered | post-hoc omega sort | **by construction, every window** |
 
@@ -102,8 +103,13 @@ This section is what makes the later null results legible. Swapping decompositio
 
 **Defect 2: K modes are not K modes.** Participation ratio 1.63. Mode 1 holds 77% of the energy and costs +10.80 MAE to ablate, while 6 of 9 come out at under 0.01 MAE. You ask for eight bands and get about 1.6.
 
-**Defect 3: the long periods do not exist.** At window 96 VMD has **no mode above 20.1 h**, so multi-day and weekly structure has nowhere to go. The bank reaches 307 h, 15x further, and puts 18.5% of its energy there.
+**Defect 3: everything slower than a day lands in the smear.** A 96-sample window at half-hourly sampling is **48 hours long**, so nothing slower than that is a resolvable oscillation. Inside that limit VMD's slowest band is centred at **21.8 h** -- the daily cycle is its slowest channel, and everything below that frequency falls into the mode-1 smear from defect 1. The bank's slowest resolvable band sits at **26.9 h**, with a separate sub-resolution slot at 75 h, so slow drift and the daily cycle occupy different channels instead of being merged into one.
 
+*Correction to `RESULTS.md` section 3, which reports a "longest period represented" of 307.2 h for the 9-mode configuration and calls it 15x VMD's reach. A 48-hour window cannot resolve a 307-hour period. That number describes a filter's nominal centre, not resolvable content, and overstates the difference. The defensible version is the one above.*
+
+![drift and coverage](figures/drift_and_coverage.png)
+
+*Left: band centres over 300 consecutive windows. VMD re-solves and the centres wander -- 12.0% of a band gap per step, crossing half a gap in 30.8% of steps -- while the bank's are flat lines because they are written down once. Right: the period each band is tuned to. Everything in the shaded region is slower than the window itself, so it is a trend slot rather than an oscillation; VMD puts one band there and the bank two. Regenerate with `python3 -m report.plot_drift`.*
 These are properties of the **modes**, and every classical method we tested shares them. That is why sections 7, 8 and 10 come back empty: they vary the *algorithm* while the physics of the resulting bands stays put. The one comparison that does move the metric changes what the bands are.
 
 ### The two constructions, side by side
@@ -112,7 +118,7 @@ VMD solves, per window, for K modes $u_k$ and centres $\omega_k$:
 
 $$\min_{\{u_k\},\{\omega_k\}} \sum_k \Big\| \partial_t\big[(\delta(t) + \tfrac{j}{\pi t}) * u_k(t)\big]e^{-j\omega_k t} \Big\|_2^2 \quad \text{s.t.} \quad \sum_k u_k = f$$
 
-The objective is **narrowbandness per window**. Nothing in it constrains where the bands sit, whether they overlap, whether one of them reaches DC, or whether this window's mode 3 is the same filter as the last window's. Those are all left to whatever the ADMM iteration converges to, which is why the measured centres move 12.4% of a band gap between adjacent windows.
+The objective is narrowbandness per window, and the bands are whatever the iteration converges to.
 
 The bank instead **parameterises** the same two quantities and fixes them:
 
@@ -120,11 +126,17 @@ $$c_k = \frac{1}{2}\cdot\frac{\sum_{j\le k}g_j - g_1}{\sum_j g_j - g_1}, \qquad 
 
 $$m_k(f) = \frac{\exp\!\big(-\tfrac12 (f-c_k)^2/b_k^2\big)}{\sum_{k'} \exp\!\big(-\tfrac12 (f-c_{k'})^2/b_{k'}^2\big)}, \qquad u_k = \mathcal{F}^{-1}\!\big[m_k \odot \mathcal{F}f\big]$$
 
-Three things follow immediately, and none of them is a penalty term:
+Writing the bands down rather than solving for them buys a set of guarantees, none of which is a penalty term and none of which the variational form provides:
 
-- $c_k$ is a cumulative sum of a softmax, so $c_1 = 0$ (a band **is** at DC) and $c_1 < c_2 < \dots < c_K = \tfrac12$ for any $\theta$. Mode identity cannot scramble.
-- the masks are normalised across $k$, so $\sum_k m_k(f) = 1$ for every $f$ and therefore $\sum_k u_k = f$ **exactly**. No residual channel, and none can become a junk dump.
-- $b_k$ is tied to the local gap $\tfrac12(c_{k+1}-c_{k-1})$, so width scales with centre. That is the constant-Q property VMD's flat bandwidth lacks.
+| property | fixed bank | causal VMD |
+|---|---|---|
+| a band exists at DC | **yes** -- $c_1 = 0$ by construction | no; measured lowest centre 0.0001 with width 0.0631, so the band spans DC rather than sitting on it |
+| centres ordered, identity stable across windows | **yes** -- $c_k$ is a cumsum of a softmax, so $c_1 < \dots < c_K$ for any $\theta$ | no; centres move 12.4% of a band gap between adjacent windows and cross half a gap in 8.2% of steps |
+| modes sum exactly to the input | **yes** -- $\sum_k m_k(f) = 1$ for every $f$, so no residual channel and none can become a junk dump | no; the residual is 8.5-9.5% of price sigma |
+| width scales with centre (constant-Q) | **yes** -- $b_k$ tied to the local gap $\tfrac12(c_{k+1}-c_{k-1})$, Q ~ 0.8-1.9 | no; width is flat in centre, so Q runs 0.42 to 7.16 |
+| resolution follows the signal's energy | **yes** -- geometric spacing puts five of eight bands below $f = 0.08$, where 73% of the power is | no; near-uniform spacing puts three there and five where there is almost nothing |
+
+These are properties of the construction, not results we tuned for. They hold for any $\theta$, on any signal, in every window.
 
 ![band comparison](figures/band_comparison.png)
 
@@ -200,10 +212,10 @@ Two ways to deliver a decomposition to a sequence model:
 | `bank` | fixed | precomputed | 2.2% | **14.305** ± 0.000 | 1 |
 | `vmd_price_res` | re-solved | precomputed | 31.7% | **14.382** ± 0.082 | 2 |
 | `wpt` | fixed | precomputed | 2.7% | **14.344** ± 0.000 | 1 |
-| `ewt` | re-solved | precomputed | 58.4% | **14.348** ± 0.000 | 1 |
+| `ewt` | re-solved | precomputed | 58.4% | **14.305** ± 0.061 | 2 |
 | `emd` | re-solved | precomputed | 41.1% | **14.817** ± 0.000 | 1 |
 
-Every internal run lands in **14.106-14.221**; every precomputed run lands in **14.305-14.817**. No overlap. The gap between the groups is larger than the seed spread within either.
+Every internal run lands in **14.106-14.221**; every precomputed run lands in **14.262-14.817**. No overlap. The gap between the groups is larger than the seed spread within either.
 
 The isolation is clean because `fixed_geo` and `bank` are **the same Gaussian filter bank**, differing only in whether the decomposition happens inside the model or is precomputed per timestep. Holding the basis fixed and moving only the delivery path reproduces most of the margin, so this is an architectural effect and not a basis effect.
 
@@ -292,15 +304,16 @@ Any claim of the form "our decomposition beats VMD by x%" that is not paired acr
 
 | experiment | purpose | done |
 |---|---|---:|
-| zoo | architecture and decomposition families, 3 seeds | 12/24 |
+| zoo | architecture and decomposition families, 3 seeds | 13/24 |
 | dose | one filter bank, churn injected as a controlled dial; now a *negative* control for the retracted hypothesis | 0/12 |
-| spatial 2x2 | horizon (1 vs 6) x exogenous window (trailing vs forward) | 2/12 |
+| spatial 2x2 | horizon (1 vs 6) x exogenous window (trailing vs forward) | 3/12 |
 
 ### spatial 2x2
 
 | config | test MAE | gain vs price-only |
 |---|---:|---:|
 | `h1_price` | 14.277 ± 0.157 | -- |
+| `h6_price` | 25.966 ± 0.000 | -- |
 
 ## 12. Caveats
 
