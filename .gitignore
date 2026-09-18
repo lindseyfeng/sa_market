@@ -1,0 +1,21 @@
+# Generated data: regenerate with vmd_panel_modes.py / decomp_zoo.py
+vmd_panel_K*/
+decomp_*/
+*.npy
+*.npz
+
+# Source and intermediate CSVs are large and rebuildable
+*.csv
+
+# Checkpoints and run directories
+runs_*/
+*.pt
+checkpoints/
+
+# Logs
+*.log
+nohup.out
+
+__pycache__/
+*.pyc
+.DS_Store

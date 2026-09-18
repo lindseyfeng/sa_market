@@ -1,0 +1,39 @@
+[
+  {
+    "arm": "vmd_price",
+    "seed": 1,
+    "val_mae": 14.034337132901104,
+    "test_mae": 14.560940277692184,
+    "test_rmse": 26.539398935233002,
+    "epoch": 12,
+    "test_mae_bestepoch": 14.537917727868534,
+    "n_feat": 8
+  },
+  {
+    "arm": "nvmd_st",
+    "seed": 1,
+    "val_mae": 13.269009646466806,
+    "test_mae": 14.399380915373275,
+    "test_rmse": 25.225681608431948,
+    "epoch": 16,
+    "n_feat": 33
+  },
+  {
+    "arm": "vmd_panel",
+    "seed": 1,
+    "val_mae": 15.069706301787983,
+    "test_mae": 18.007745435399915,
+    "test_rmse": 28.776824412943586,
+    "epoch": 7,
+    "n_feat": 215
+  },
+  {
+    "arm": "nvmd_temporal",
+    "seed": 1,
+    "val_mae": 13.90496494381233,
+    "test_mae": 14.175272213834003,
+    "test_rmse": 25.78952694254701,
+    "epoch": 10,
+    "n_feat": 33
+  }
+]
