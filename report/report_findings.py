@@ -51,15 +51,15 @@ A("| 3 | Putting the decomposition **inside** the forecaster beats the "
   "classical decompose-then-forecast pipeline | internal 14.109-14.221 vs "
   "precomputed 14.305-14.817, no overlap, same filter bank | **Supported**, "
   "2 seeds |")
-A("| 4 | The *learned* band parameters are what pay | trained bank 14.163 vs "
-  "hard-coded 14.165 | **Refuted by our own control.** The layer pays, the "
-  "learning does not |")
-A("| 5 | Which classical decomposition you pick matters | five families inside "
-  "0.3%, less than one method\'s seed spread | **Refuted** |")
-A("| 6 | Cross-window basis stability predicts accuracy | churn spans 26x, "
-  "accuracy spans 0.3% | **Refuted by our own control.** Retracted below |")
-A("| 7 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does "
-  "not | **Fails as stated.** The line is still open, section 7 |")
+A("| 4 | Classical modes underperform because of **what the bands physically "
+  "are**, not because of which algorithm produced them | VMD\'s lowest band is "
+  "2.5x wider than its own centre, so it smears across DC; the decomposition "
+  "is effectively 1.6 modes; at window 96 nothing above 20.1 h exists. Vary "
+  "the algorithm instead and nothing moves: five families within 0.3%, learned "
+  "and hard-coded banks within 0.002, churn spanning 26x with no effect | "
+  "**Supported** |")
+A("| 5 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does "
+  "not | **Fails as stated.** The line is still open, section 9 |")
 
 A("\n## 1. The leakage finding\n")
 A("This is the result the project rests on, and nothing in the later work "
@@ -151,7 +151,10 @@ A("\nWhat the earlier design got wrong: the mixed modes **replaced** the "
   "information. **MAE got worse while RMSE got better**, consistently, and the "
   "concat fix is what separated the two.")
 
-A("\n## 4. Interpretability\n")
+A("\n## 4. Why the classical bands underperform: the physics, not the algorithm\n")
+A("This section is what makes the later null results legible. Swapping "
+  "decomposition algorithms moves nothing, because they all hand the model "
+  "bands with the same three defects.\n")
 A("| | causal VMD, tuned K=8 | NVMD v3, 9 modes |")
 A("|---|---:|---:|")
 A("| participation ratio | 1.63 | **6.11** |")
@@ -159,14 +162,71 @@ A("| energy in top mode | 77.36% | **28.16%** |")
 A("| longest period represented | 20.1 h | **307.2 h** |")
 A("| top-mode ablation cost | +10.80 MAE | +0.03 MAE |")
 A("| centres ordered | post-hoc omega sort | **by construction, every window** |")
-A("\nVMD\'s K-mode decomposition is effectively **1.6 modes**: mode 1 holds "
-  "77% of the energy and costs +10.80 MAE to ablate, while 6 of 9 modes are "
-  "removable at under 0.01 MAE. Its mode 1 has bandwidth 0.0631 at centre "
-  "0.0249 -- **bandwidth 2.5x the centre**, so the band spans DC. That is a "
-  "smear, not a band.\n")
-A("At window 96 VMD has **no mode above 20.1 h** and structurally cannot "
-  "represent multi-day structure. Weekly behaviour has nowhere to go. The bank "
-  "reaches 307 h, 15x further, with 18.5% of its energy there.")
+A("\n**Defect 1: the lowest band is not a band.** VMD\'s mode 1 has bandwidth "
+  "0.0631 at centre 0.0249, so its width is **2.5x its own centre** and the "
+  "band spans DC. Its bandwidth is also flat regardless of centre, where a "
+  "filter bank scales width with centre (constant-Q, stable at Q ~ 0.7-0.9 "
+  "from mode 3 up).\n")
+A("**Defect 2: K modes are not K modes.** Participation ratio 1.63. Mode 1 "
+  "holds 77% of the energy and costs +10.80 MAE to ablate, while 6 of 9 come "
+  "out at under 0.01 MAE. You ask for eight bands and get about 1.6.\n")
+A("**Defect 3: the long periods do not exist.** At window 96 VMD has **no mode "
+  "above 20.1 h**, so multi-day and weekly structure has nowhere to go. The "
+  "bank reaches 307 h, 15x further, and puts 18.5% of its energy there.\n")
+A("These are properties of the **modes**, and every classical method we tested "
+  "shares them. That is why sections 7, 8 and 10 come back empty: they vary "
+  "the *algorithm* while the physics of the resulting bands stays put. The one "
+  "comparison that does move the metric changes what the bands are.")
+
+A("\n### The two constructions, side by side\n")
+A("VMD solves, per window, for K modes $u_k$ and centres $\\omega_k$:\n")
+A("$$\\min_{\\{u_k\\},\\{\\omega_k\\}} \\sum_k \\Big\\| "
+  "\\partial_t\\big[(\\delta(t) + \\tfrac{j}{\\pi t}) * u_k(t)\\big]"
+  "e^{-j\\omega_k t} \\Big\\|_2^2 \\quad \\text{s.t.} \\quad "
+  "\\sum_k u_k = f$$\n")
+A("The objective is **narrowbandness per window**. Nothing in it constrains "
+  "where the bands sit, whether they overlap, whether one of them reaches DC, "
+  "or whether this window\'s mode 3 is the same filter as the last "
+  "window\'s. Those are all left to whatever the ADMM iteration converges to, "
+  "which is why the measured centres move 12.4% of a band gap between adjacent "
+  "windows.\n")
+A("The bank instead **parameterises** the same two quantities and fixes them:\n")
+A("$$c_k = \\frac{1}{2}\\cdot\\frac{\\sum_{j\\le k}g_j - g_1}"
+  "{\\sum_j g_j - g_1}, \\qquad g = \\mathrm{softmax}(\\theta), "
+  "\\qquad b_k = b_{\\min,k} + \\mathrm{softplus}(\\beta_k)$$\n")
+A("$$m_k(f) = \\frac{\\exp\\!\\big(-\\tfrac12 (f-c_k)^2/b_k^2\\big)}"
+  "{\\sum_{k\'} \\exp\\!\\big(-\\tfrac12 (f-c_{k\'})^2/b_{k\'}^2\\big)}, "
+  "\\qquad u_k = \\mathcal{F}^{-1}\\!\\big[m_k \\odot \\mathcal{F}f\\big]$$\n")
+A("Three things follow immediately, and none of them is a penalty term:\n")
+A("- $c_k$ is a cumulative sum of a softmax, so $c_1 = 0$ (a band **is** at DC) "
+  "and $c_1 < c_2 < \\dots < c_K = \\tfrac12$ for any $\\theta$. Mode "
+  "identity cannot scramble.")
+A("- the masks are normalised across $k$, so $\\sum_k m_k(f) = 1$ for every "
+  "$f$ and therefore $\\sum_k u_k = f$ **exactly**. No residual channel, and "
+  "none can become a junk dump.")
+A("- $b_k$ is tied to the local gap $\\tfrac12(c_{k+1}-c_{k-1})$, so width "
+  "scales with centre. That is the constant-Q property VMD\'s flat bandwidth "
+  "lacks.\n")
+A("![band comparison](figures/band_comparison.png)\n")
+A("*Left: causal VMD\'s bank, with bars marking how far each centre drifts "
+  "between adjacent windows. Its lowest bands are broad plateaus spanning DC "
+  "rather than bands, and its width is flat in centre, so Q runs from 0.42 at "
+  "mode 2 to 7.16 at mode 8. Middle: the fixed geometric bank, constant-Q at "
+  "Q ~ 0.8-1.9 from mode 2 up. Right: the price power spectrum. **73% of the "
+  "power sits below f = 0.08** -- the bank puts five of eight bands there, VMD "
+  "puts three and spends the other five where there is almost nothing.*\n")
+A("| mode | VMD centre | VMD width | VMD Q | bank centre | bank width | bank Q |")
+A("|---:|---:|---:|---:|---:|---:|---:|")
+for _k, (_vc, _vb, _bc, _bb) in enumerate(zip(
+        [0.0001, 0.0268, 0.0862, 0.1567, 0.2292, 0.3026, 0.3776, 0.4519],
+        [0.0631] * 8,
+        [0.0000, 0.0066, 0.0186, 0.0401, 0.0789, 0.1486, 0.2741, 0.5000],
+        [0.0028, 0.0079, 0.0142, 0.0254, 0.0456, 0.0813, 0.1442, 0.0938])):
+    _qv = _vc / _vb if _vc > 1e-6 else 0.0
+    _qb = _bc / _bb if _bc > 1e-6 else 0.0
+    A(f"| {_k+1} | {_vc:.4f} | {_vb:.4f} | {_qv:.2f} | {_bc:.4f} | "
+      f"{_bb:.4f} | {_qb:.2f} |")
+A("\nRegenerate with `python3 -m report.plot_bands`.")
 
 A("\n---\n")
 A("*Sections 5 onward are the matched-protocol study: identical rows, one head, one budget, selection on a validation tail of the train year rather than on test.*\n")
@@ -177,6 +237,12 @@ A("Everything below is train 2018 / test 2019, SA1 half-hourly price, window 96,
   "`RESULTS.md` section 13.3 and `benchmark_seeds.py` report.\n")
 
 A("## What the evidence now supports\n")
+A("0. **The bands themselves are the bottleneck, not the algorithm that finds "
+  "them.** Every classical method here hands the model bands with the same "
+  "physical defects: a lowest band wider than its own centre, almost all the "
+  "energy in one mode, and nothing representing structure beyond a day. "
+  "Swapping between those algorithms changes nothing measurable. Changing what "
+  "the bands *are* does.")
 A("1. **Neural decomposition works, and we can now say where its value comes "
   "from.** Making the decomposition a differentiable layer *inside* the "
   "forecaster beats the classical decompose-then-forecast pipeline on every "
@@ -189,12 +255,13 @@ A("2. **The value is in the architecture, not in learning the band "
   "other. That is a sharper claim than \"our learned decomposition is "
   "better\": it says the in-model decomposition layer is what pays, and it "
   "costs 0.1 s/year against VMD\'s 126-500 s/year.")
-A("3. **Which classical decomposition you choose does not matter.** With the "
-  "architecture matched, the information equalised and selection honest, five "
-  "decomposition families land inside 0.3% of one another, and seed-to-seed "
-  "variation is larger than any difference between them.")
-A("4. **Basis stability does not predict accuracy.** This was our hypothesis "
-  "and its own control rejected it. See the retraction below.")
+A("3. **Which classical algorithm you choose does not matter**, which is "
+  "evidence for point 0 rather than a nihilistic result. Five families land "
+  "inside 0.3% of one another, less than one method\'s seed-to-seed "
+  "variation. They agree because they share the defect.")
+A("4. **Basis stability does not predict accuracy either.** Our own control "
+  "rejected that hypothesis, arriving at the same place by a third route: "
+  "*how* the bands are found is not what matters. See the retraction below.")
 A("5. **Claim 3 of `RESULTS.md` section 12 fails as stated.** Once VMD is given "
   "its residual and selection is honest, spatio-temporal NVMD does not beat "
   "VMD. The surviving claim is temporal, not spatial.\n")

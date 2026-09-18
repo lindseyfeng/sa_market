@@ -29,7 +29,7 @@ def denorm(v, s_min, s_max):
 
 # === Train ===
 def train(args):
-    df = pd.read_csv("../../VMD_modes_with_residual_2018_2021_with_EWT.csv")
+    df = pd.read_csv("../../VMD_modes_with_residual_2018_2018.csv")
     df_eval = pd.read_csv(args.eval_csv)
     s_val = torch.tensor(df_eval[args.mode_col].to_numpy(), dtype=torch.float32)
 
@@ -73,8 +73,8 @@ def train(args):
             for xb, yb in vl: 
                 x = model(xb.to(device))
                 y_pred = denorm(x, train_data.s_min, train_data.s_max)
-                mae_losses.append(F.l1_loss(y_pred, yb.to(device).item()))
-                v_losses.append(F.mse_loss(y_pred, yb.to(device)).item()) 
+                mae_losses.append(F.l1_loss(y_pred, yb.to(device)))
+                v_losses.append(F.mse_loss(y_pred, yb.to(device))) 
      
         val_loss = np.mean(v_losses)
         print(f"[EP {ep+1}] val={val_loss:.6f}, MAE = {np.mean(mae_losses):.6f}")
@@ -120,7 +120,7 @@ ap.add_argument("--mode-col", default="Mode_1")
 ap.add_argument("--filters-g1", type=int, default=64)
 ap.add_argument("--filters-g2", type=int, default=64)
 ap.add_argument("--filters-g3", type=int, default=64)
-ap.add_argument("--eval-csv", default="../../VMD_modes_with_residual_2021_2022_with_EWT.csv")
+ap.add_argument("--eval-csv", default="../../VMD_modes_with_residual_2019_2019.csv")
 
 
 ap.add_argument("--lstm", type=int, default=150)

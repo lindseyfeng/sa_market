@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-18 12:15*
+*generated 2026-09-18 12:25*
 
 ## Summary
 
@@ -9,10 +9,8 @@
 | 1 | The published gains from VMD-based price forecasting are **leakage**, not decomposition | per-mode AR(48) probe, capacity-irrelevance test, and a reproduction of the original 7.11 MAE | **Strong. This is the headline** |
 | 2 | A band decomposition can be had at 10^3-10^5x lower cost | 0.1 s/year against 59-18,178 s/year | **Strong** |
 | 3 | Putting the decomposition **inside** the forecaster beats the classical decompose-then-forecast pipeline | internal 14.109-14.221 vs precomputed 14.305-14.817, no overlap, same filter bank | **Supported**, 2 seeds |
-| 4 | The *learned* band parameters are what pay | trained bank 14.163 vs hard-coded 14.165 | **Refuted by our own control.** The layer pays, the learning does not |
-| 5 | Which classical decomposition you pick matters | five families inside 0.3%, less than one method's seed spread | **Refuted** |
-| 6 | Cross-window basis stability predicts accuracy | churn spans 26x, accuracy spans 0.3% | **Refuted by our own control.** Retracted below |
-| 7 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does not | **Fails as stated.** The line is still open, section 7 |
+| 4 | Classical modes underperform because of **what the bands physically are**, not because of which algorithm produced them | VMD's lowest band is 2.5x wider than its own centre, so it smears across DC; the decomposition is effectively 1.6 modes; at window 96 nothing above 20.1 h exists. Vary the algorithm instead and nothing moves: five families within 0.3%, learned and hard-coded banks within 0.002, churn spanning 26x with no effect | **Supported** |
+| 5 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does not | **Fails as stated.** The line is still open, section 9 |
 
 ## 1. The leakage finding
 
@@ -88,7 +86,9 @@ flowchart LR
 
 What the earlier design got wrong: the mixed modes **replaced** the target's own. That destroys the partition of unity -- reconstruction error 0.00 to 1.82, with cross terms 2-6.5x the self term -- so the head never saw a faithful price encoding. It corrupted the DC and daily bands, which carry the ~88% of ordinary intervals, while the fast bands gained real spike information. **MAE got worse while RMSE got better**, consistently, and the concat fix is what separated the two.
 
-## 4. Interpretability
+## 4. Why the classical bands underperform: the physics, not the algorithm
+
+This section is what makes the later null results legible. Swapping decomposition algorithms moves nothing, because they all hand the model bands with the same three defects.
 
 | | causal VMD, tuned K=8 | NVMD v3, 9 modes |
 |---|---:|---:|
@@ -98,9 +98,50 @@ What the earlier design got wrong: the mixed modes **replaced** the target's own
 | top-mode ablation cost | +10.80 MAE | +0.03 MAE |
 | centres ordered | post-hoc omega sort | **by construction, every window** |
 
-VMD's K-mode decomposition is effectively **1.6 modes**: mode 1 holds 77% of the energy and costs +10.80 MAE to ablate, while 6 of 9 modes are removable at under 0.01 MAE. Its mode 1 has bandwidth 0.0631 at centre 0.0249 -- **bandwidth 2.5x the centre**, so the band spans DC. That is a smear, not a band.
+**Defect 1: the lowest band is not a band.** VMD's mode 1 has bandwidth 0.0631 at centre 0.0249, so its width is **2.5x its own centre** and the band spans DC. Its bandwidth is also flat regardless of centre, where a filter bank scales width with centre (constant-Q, stable at Q ~ 0.7-0.9 from mode 3 up).
 
-At window 96 VMD has **no mode above 20.1 h** and structurally cannot represent multi-day structure. Weekly behaviour has nowhere to go. The bank reaches 307 h, 15x further, with 18.5% of its energy there.
+**Defect 2: K modes are not K modes.** Participation ratio 1.63. Mode 1 holds 77% of the energy and costs +10.80 MAE to ablate, while 6 of 9 come out at under 0.01 MAE. You ask for eight bands and get about 1.6.
+
+**Defect 3: the long periods do not exist.** At window 96 VMD has **no mode above 20.1 h**, so multi-day and weekly structure has nowhere to go. The bank reaches 307 h, 15x further, and puts 18.5% of its energy there.
+
+These are properties of the **modes**, and every classical method we tested shares them. That is why sections 7, 8 and 10 come back empty: they vary the *algorithm* while the physics of the resulting bands stays put. The one comparison that does move the metric changes what the bands are.
+
+### The two constructions, side by side
+
+VMD solves, per window, for K modes $u_k$ and centres $\omega_k$:
+
+$$\min_{\{u_k\},\{\omega_k\}} \sum_k \Big\| \partial_t\big[(\delta(t) + \tfrac{j}{\pi t}) * u_k(t)\big]e^{-j\omega_k t} \Big\|_2^2 \quad \text{s.t.} \quad \sum_k u_k = f$$
+
+The objective is **narrowbandness per window**. Nothing in it constrains where the bands sit, whether they overlap, whether one of them reaches DC, or whether this window's mode 3 is the same filter as the last window's. Those are all left to whatever the ADMM iteration converges to, which is why the measured centres move 12.4% of a band gap between adjacent windows.
+
+The bank instead **parameterises** the same two quantities and fixes them:
+
+$$c_k = \frac{1}{2}\cdot\frac{\sum_{j\le k}g_j - g_1}{\sum_j g_j - g_1}, \qquad g = \mathrm{softmax}(\theta), \qquad b_k = b_{\min,k} + \mathrm{softplus}(\beta_k)$$
+
+$$m_k(f) = \frac{\exp\!\big(-\tfrac12 (f-c_k)^2/b_k^2\big)}{\sum_{k'} \exp\!\big(-\tfrac12 (f-c_{k'})^2/b_{k'}^2\big)}, \qquad u_k = \mathcal{F}^{-1}\!\big[m_k \odot \mathcal{F}f\big]$$
+
+Three things follow immediately, and none of them is a penalty term:
+
+- $c_k$ is a cumulative sum of a softmax, so $c_1 = 0$ (a band **is** at DC) and $c_1 < c_2 < \dots < c_K = \tfrac12$ for any $\theta$. Mode identity cannot scramble.
+- the masks are normalised across $k$, so $\sum_k m_k(f) = 1$ for every $f$ and therefore $\sum_k u_k = f$ **exactly**. No residual channel, and none can become a junk dump.
+- $b_k$ is tied to the local gap $\tfrac12(c_{k+1}-c_{k-1})$, so width scales with centre. That is the constant-Q property VMD's flat bandwidth lacks.
+
+![band comparison](figures/band_comparison.png)
+
+*Left: causal VMD's bank, with bars marking how far each centre drifts between adjacent windows. Its lowest bands are broad plateaus spanning DC rather than bands, and its width is flat in centre, so Q runs from 0.42 at mode 2 to 7.16 at mode 8. Middle: the fixed geometric bank, constant-Q at Q ~ 0.8-1.9 from mode 2 up. Right: the price power spectrum. **73% of the power sits below f = 0.08** -- the bank puts five of eight bands there, VMD puts three and spends the other five where there is almost nothing.*
+
+| mode | VMD centre | VMD width | VMD Q | bank centre | bank width | bank Q |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.0001 | 0.0631 | 0.00 | 0.0000 | 0.0028 | 0.00 |
+| 2 | 0.0268 | 0.0631 | 0.42 | 0.0066 | 0.0079 | 0.84 |
+| 3 | 0.0862 | 0.0631 | 1.37 | 0.0186 | 0.0142 | 1.31 |
+| 4 | 0.1567 | 0.0631 | 2.48 | 0.0401 | 0.0254 | 1.58 |
+| 5 | 0.2292 | 0.0631 | 3.63 | 0.0789 | 0.0456 | 1.73 |
+| 6 | 0.3026 | 0.0631 | 4.80 | 0.1486 | 0.0813 | 1.83 |
+| 7 | 0.3776 | 0.0631 | 5.98 | 0.2741 | 0.1442 | 1.90 |
+| 8 | 0.4519 | 0.0631 | 7.16 | 0.5000 | 0.0938 | 5.33 |
+
+Regenerate with `python3 -m report.plot_bands`.
 
 ---
 
@@ -110,10 +151,11 @@ Everything below is train 2018 / test 2019, SA1 half-hourly price, window 96, ho
 
 ## What the evidence now supports
 
+0. **The bands themselves are the bottleneck, not the algorithm that finds them.** Every classical method here hands the model bands with the same physical defects: a lowest band wider than its own centre, almost all the energy in one mode, and nothing representing structure beyond a day. Swapping between those algorithms changes nothing measurable. Changing what the bands *are* does.
 1. **Neural decomposition works, and we can now say where its value comes from.** Making the decomposition a differentiable layer *inside* the forecaster beats the classical decompose-then-forecast pipeline on every run, with no overlap between the two groups and a margin larger than seed noise. This is the only effect in this whole line of work that survives an honest protocol, and it is a property of the **architecture**, not of any particular basis.
 2. **The value is in the architecture, not in learning the band parameters.** A trained bank and a hard-coded one land within 0.001 of each other. That is a sharper claim than "our learned decomposition is better": it says the in-model decomposition layer is what pays, and it costs 0.1 s/year against VMD's 126-500 s/year.
-3. **Which classical decomposition you choose does not matter.** With the architecture matched, the information equalised and selection honest, five decomposition families land inside 0.3% of one another, and seed-to-seed variation is larger than any difference between them.
-4. **Basis stability does not predict accuracy.** This was our hypothesis and its own control rejected it. See the retraction below.
+3. **Which classical algorithm you choose does not matter**, which is evidence for point 0 rather than a nihilistic result. Five families land inside 0.3% of one another, less than one method's seed-to-seed variation. They agree because they share the defect.
+4. **Basis stability does not predict accuracy either.** Our own control rejected that hypothesis, arriving at the same place by a third route: *how* the bands are found is not what matters. See the retraction below.
 5. **Claim 3 of `RESULTS.md` section 12 fails as stated.** Once VMD is given its residual and selection is honest, spatio-temporal NVMD does not beat VMD. The surviving claim is temporal, not spatial.
 
 

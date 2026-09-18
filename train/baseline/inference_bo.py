@@ -9,7 +9,7 @@ from train_bo import MRC_BiLSTM
 
 
 # ✅ fixed dataset path (edit this once if needed)
-CSV_PATH = "../../VMD_modes_with_residual_2021_2022_with_EWT.csv"
+CSV_PATH = "../../VMD_modes_2019_2010.csv"
 
 
 class InferenceDataset(Dataset):

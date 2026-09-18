@@ -185,13 +185,13 @@ def train_one(train_series, val_series, k, ctor, batch, epochs, device):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode-col", default="Mode_1")
-    ap.add_argument("--csv", default="../../VMD_modes_with_residual_2018_2021_with_EWT.csv")
-    ap.add_argument("--optuna-trials", type=int, default=0)
+    ap.add_argument("--csv", default="../../VMD_modes_with_residual_2018_2018.csv")
+    ap.add_argument("--optuna-trials", type=int, default=5)
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv)
     s = torch.tensor(df[args.mode_col].to_numpy(), dtype=torch.float32)
-    df_val = pd.read_csv("../../VMD_modes_with_residual_2021_2022_with_EWT.csv")
+    df_val = pd.read_csv("../../VMD_modes_with_residual_2019_2019.csv")
     s_val = torch.tensor(df_val[args.mode_col].to_numpy(), dtype=torch.float32)
 
     k = get_k(args.mode_col)
