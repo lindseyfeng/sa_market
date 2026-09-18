@@ -47,10 +47,15 @@ A("| 1 | The published gains from VMD-based price forecasting are **leakage**, "
   "reproduction of the original 7.11 MAE | **Strong. This is the headline** |")
 A("| 2 | A band decomposition can be had at 10^3-10^5x lower cost | 0.1 s/year "
   "against 59-18,178 s/year | **Strong** |")
-A("| 3 | Putting the decomposition **inside** the forecaster beats the "
-  "classical decompose-then-forecast pipeline | internal 14.109-14.221 vs "
-  "precomputed 14.305-14.817, no overlap, same filter bank | **Supported**, "
-  "2 seeds |")
+_ip = [r["test_mae"] for r in STAB if PATH.get(r["arm"]) == "internal"]
+_pp = [r["test_mae"] for r in STAB if PATH.get(r["arm"]) == "precomputed"]
+_rng = (f"internal {min(_ip):.3f}-{max(_ip):.3f} vs precomputed "
+        f"{min(_pp):.3f}-{max(_pp):.3f}, "
+        f"{'no overlap' if max(_ip) < min(_pp) else 'OVERLAPPING'}"
+        if _ip and _pp else "pending")
+A(f"| 3 | Putting the decomposition **inside** the forecaster beats the "
+  f"classical decompose-then-forecast pipeline | {_rng}, same filter bank | "
+  f"**Supported**, 2 seeds |")
 A("| 4 | Classical modes underperform because of **what the bands physically "
   "are**, not because of which algorithm produced them | VMD\'s lowest band is "
   "2.5x wider than its own centre, so it smears across DC; the decomposition "
@@ -229,48 +234,19 @@ for _k, (_vc, _vb, _bc, _bb) in enumerate(zip(
 A("\nRegenerate with `python3 -m report.plot_bands`.")
 
 A("\n---\n")
-A("*Sections 5 onward are the matched-protocol study: identical rows, one head, one budget, selection on a validation tail of the train year rather than on test.*\n")
-A("Everything below is train 2018 / test 2019, SA1 half-hourly price, window 96, "
-  "horizon 1, selection on a validation tail of the train year with a 96-window "
-  "embargo, test scored once from those weights. `honest` is that number; "
-  "`cherry` is the minimum of test MAE over epochs, the statistic "
-  "`RESULTS.md` section 13.3 and `benchmark_seeds.py` report.\n")
-
-A("## What the evidence now supports\n")
-A("0. **The bands themselves are the bottleneck, not the algorithm that finds "
-  "them.** Every classical method here hands the model bands with the same "
-  "physical defects: a lowest band wider than its own centre, almost all the "
-  "energy in one mode, and nothing representing structure beyond a day. "
-  "Swapping between those algorithms changes nothing measurable. Changing what "
-  "the bands *are* does.")
-A("1. **Neural decomposition works, and we can now say where its value comes "
-  "from.** Making the decomposition a differentiable layer *inside* the "
-  "forecaster beats the classical decompose-then-forecast pipeline on every "
-  "run, with no overlap between the two groups and a margin larger than "
-  "seed noise. This is the only effect in this whole line of work that "
-  "survives an honest protocol, and it is a property of the **architecture**, "
-  "not of any particular basis.")
-A("2. **The value is in the architecture, not in learning the band "
-  "parameters.** A trained bank and a hard-coded one land within 0.001 of each "
-  "other. That is a sharper claim than \"our learned decomposition is "
-  "better\": it says the in-model decomposition layer is what pays, and it "
-  "costs 0.1 s/year against VMD\'s 126-500 s/year.")
-A("3. **Which classical algorithm you choose does not matter**, which is "
-  "evidence for point 0 rather than a nihilistic result. Five families land "
-  "inside 0.3% of one another, less than one method\'s seed-to-seed "
-  "variation. They agree because they share the defect.")
-A("4. **Basis stability does not predict accuracy either.** Our own control "
-  "rejected that hypothesis, arriving at the same place by a third route: "
-  "*how* the bands are found is not what matters. See the retraction below.")
-A("5. **Claim 3 of `RESULTS.md` section 12 fails as stated.** Once VMD is given "
-  "its residual and selection is honest, spatio-temporal NVMD does not beat "
-  "VMD. The surviving claim is temporal, not spatial.\n")
+A("**Sections 5 onward are the matched-protocol study.** Train 2018 / test "
+  "2019, SA1 half-hourly price, window 96, horizon 1, identical rows, one head, "
+  "one budget. Selection on a validation tail of the train year with a "
+  "96-window embargo; test scored once from those weights. `honest` is that "
+  "number. `cherry` is the minimum of test MAE over epochs, which is the "
+  "statistic `RESULTS.md` section 13.3 and `benchmark_seeds.py` report, kept "
+  "alongside so the two sets of tables can be reconciled.\n")
 
 # ---------------------------------------------------------------- experiment 1
 A("\n## 5. Claim 3: does spatio-temporal NVMD beat VMD?\n")
 A("Four arms, identical rows, `R=33` panel, 2 seeds. **This run used VMD "
   "without its residual channel**, which is a confound discovered afterwards "
-  "and corrected in experiment 2.\n")
+  "and corrected in section 6.\n")
 if FOUR:
     A("| arm | information | decomposition | honest | cherry | selection effect |")
     A("|---|---|---|---:|---:|---:|")
@@ -285,16 +261,29 @@ if FOUR:
         gap = f"{h[0]-c[0]:+.3f}" if c else "--"
         cs = f"{c[0]:.3f}" if c else "--"
         A(f"| `{a}` | {info} | {dec} | **{h[0]:.3f}** ± {h[1]:.3f} | {cs} | {gap} |")
-    A("\n- Spatial coupling **loses** to temporal-only on both seeds and both "
+    A("\n**Read this table with the next section.** As it stands `nvmd_st` "
+      "(14.480) appears to beat `vmd_price` (14.524), which would make claim 3 "
+      "true. It does not survive: `vmd_price` here is missing its residual "
+      "channel, and once that is returned the same arm scores **14.382**, "
+      "which beats `nvmd_st` by 0.098. The corrected comparison:\n")
+    A("| arm | honest MAE | note |")
+    A("|---|---:|---|")
+    A("| `nvmd_temporal` | **14.163** | joint decomposition, no spatial coupling |")
+    A("| `vmd_price_res` | 14.382 | VMD with its residual channel returned |")
+    A("| `nvmd_st` | 14.480 | joint decomposition **plus** spatial coupling |")
+    A("| `vmd_price` | 14.524 | VMD without the residual -- the confounded number |")
+    A("\nSo the surviving statement is **temporal**: joint decomposition beats "
+      "VMD by 0.219, and turning on spatial coupling gives back more than that.\n")
+    A("- Spatial coupling **loses** to temporal-only on both seeds and both "
       "selection rules.")
     A("- Handing classical VMD the same 26 exogenous channels is catastrophic "
       "(~18.0), though that arm shares hyperparameters with an 8-channel arm "
       "and is arguably under-tuned.")
-    A("- The selection effect is an order of magnitude larger for `nvmd_st` "
-      "than for any other arm. It carries an extra 8x33x33 coupling tensor, so "
-      "its epoch-to-epoch test curve is noisier, and a minimum over ~30 test "
-      "evaluations rewards exactly that. **Selecting on test does not subsidise "
-      "all arms equally; it subsidises the high-variance one.**")
+    A("- The selection effect differs by a factor of ten across these four "
+      "arms, from +0.011 to +0.170. **Selecting on test is therefore not a "
+      "neutral transformation: it moves some arms much further than others, so "
+      "a table built that way can reorder methods.** See the retraction in "
+      "section 8 for what we can and cannot say about *why*.")
 
 # ---------------------------------------------------------------- confound
 A("\n## 6. A confound we created, and what it cost\n")
@@ -346,17 +335,18 @@ if STAB:
       "happens inside the model or is precomputed per timestep. Holding the "
       "basis fixed and moving only the delivery path reproduces most of the "
       "margin, so this is an architectural effect and not a basis effect.")
-    A("\n**This is the result to build the paper on.** It says a neural "
-      "decomposition layer is worth having, states precisely why -- the model "
-      "sees mode waveforms rather than a trajectory of last samples -- and "
-      "does not depend on the learned parameters doing anything, which is what "
-      "makes it robust. It also transfers: any decomposition expressible as a "
-      "differentiable filtering step can be moved inside the model.")
-    A("\nA likely mechanism, not yet tested: on the precomputed path the value "
-      "at time t is the *last sample* of the decomposition of window "
+    A("\n**This is the result to build the paper on.** A neural decomposition "
+      "layer is worth having, it does not depend on the learned parameters "
+      "doing anything -- which is what makes it robust to the \"did you tune "
+      "the baseline as hard\" objection -- and it transfers: any decomposition "
+      "expressible as a differentiable filtering step can be moved inside the "
+      "model.")
+    A("\n**The mechanism is plausible but untested.** On the precomputed path "
+      "the value at time t is the *last sample* of the decomposition of window "
       "[t-95, t], so a sequence of them is a trajectory of last samples. The "
-      "internal path hands the model the actual mode waveform across one "
-      "consistent window.")
+      "internal path hands the model each mode\'s waveform across one "
+      "consistent window, which is strictly more. We have not isolated that, "
+      "and it is the next thing to test.")
 
 # ---------------------------------------------------------------- retraction
 A("\n## 8. Retracted: basis stability predicts accuracy\n")
@@ -371,7 +361,7 @@ if CHURN:
         r = CHURN.get(m)
         if r:
             A(f"| {m} | {r['kind']} | {r['drift']:.1%} | {r['churn']:.1%} |")
-    A("\nChurn separates the families by 12-20x with no overlap. **Accuracy does "
+    A("\nChurn separates the two families by 12-27x with no overlap. **Accuracy does "
       "not follow it.** Within the matched precomputed path, fixed and "
       "re-solved bases interleave, and the whole group spans 0.3% while churn "
       "spans a factor of 26.")
@@ -395,7 +385,7 @@ tp = [r for r in FOUR if r["arm"] == "nvmd_temporal"]
 if st and tp:
     A("Both arms are the same model on the **internal** path, differing only in "
       "whether the per-band cross-channel coupling is enabled. So this sits "
-      "inside the architecture family that wins section 3, and isolates the "
+      "inside the architecture family that wins section 7, and isolates the "
       "spatial encoding itself.\n")
     A("| arm | seed 1 | seed 2 | mean | seed spread | selection effect |")
     A("|---|---:|---:|---:|---:|---:|")
@@ -405,19 +395,25 @@ if st and tp:
         A(f"| `{name}` | {v[0]:.3f} | {v[1]:.3f} | **{np.mean(v):.3f}** | "
           f"{max(v)-min(v):.3f} | {se:+.3f} |")
     d = np.mean([r["test_mae"] for r in st]) - np.mean([r["test_mae"] for r in tp])
-    A(f"\n**Spatial encoding costs {d:+.3f} MAE**, and the degradation is not "
-      f"noise: `nvmd_st` reproduces to within 0.003 across seeds, so the "
-      f"penalty is ~100x its own seed spread. It also lands worse than every "
-      f"arm on the precomputed path except EMD, which means enabling spatial "
-      f"coupling gives back more than the architecture won.\n")
-    A("Two independent measurements point at the same mechanism -- variance, "
-      "not absence of signal:\n")
-    A("- The coupling adds an 8x33x33 tensor, and `nvmd_st`\'s selection effect "
-      "is +0.170 against +0.016 for the temporal arm. Its epoch-to-epoch test "
-      "curve is an order of magnitude noisier.")
+    sp = max(max(v) - min(v) for v in
+             ([r["test_mae"] for r in st], [r["test_mae"] for r in tp]))
+    A(f"\n**Spatial encoding costs {d:+.3f} MAE.** The larger of the two arms\' "
+      f"seed spreads is {sp:.3f}, so the penalty is about {abs(d)/sp:.0f}x the "
+      f"noise scale -- not decisive on two seeds, but consistent in sign and "
+      f"size across both. It also lands worse than every arm on the "
+      f"precomputed path except EMD, which means enabling spatial coupling "
+      f"gives back more than the architecture won.\n")
+    A("One measurement bears on why, and points at redundant conditioning "
+      "rather than absent signal:\n")
     A("- `RESULTS.md` section 13.4 measured the exogenous block taking 60-95% "
       "of head input variance while buying ~1% MAE. A block that dominates the "
-      "input and moves the metric that little is redundant conditioning.\n")
+      "input and moves the metric that little is behaving as redundant "
+      "conditioning.\n")
+    A("*An earlier draft also blamed the arm\'s large selection effect on its "
+      "8x33x33 coupling tensor. That does not hold: across the stability run "
+      "the selection effect ranges +0.000 to +0.329 with no relation to "
+      "parameter count, so we have no validated mechanism for it and only "
+      "report that it is arm-dependent.*\n")
     A("**This is a verdict on the current design, not on spatial information.** "
       "Two reasons to withhold judgement, both testable and both in flight:\n")
     A("1. **Horizon.** Every number above is h=1, which `RESULTS.md` section 11 "
