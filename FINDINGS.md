@@ -1,6 +1,110 @@
-# Decomposition for electricity price forecasting: what we can and cannot claim
+# Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-18 11:52*
+*generated 2026-09-18 12:15*
+
+## Summary
+
+| # | claim | evidence | status |
+|---|---|---|---|
+| 1 | The published gains from VMD-based price forecasting are **leakage**, not decomposition | per-mode AR(48) probe, capacity-irrelevance test, and a reproduction of the original 7.11 MAE | **Strong. This is the headline** |
+| 2 | A band decomposition can be had at 10^3-10^5x lower cost | 0.1 s/year against 59-18,178 s/year | **Strong** |
+| 3 | Putting the decomposition **inside** the forecaster beats the classical decompose-then-forecast pipeline | internal 14.109-14.221 vs precomputed 14.305-14.817, no overlap, same filter bank | **Supported**, 2 seeds |
+| 4 | The *learned* band parameters are what pay | trained bank 14.163 vs hard-coded 14.165 | **Refuted by our own control.** The layer pays, the learning does not |
+| 5 | Which classical decomposition you pick matters | five families inside 0.3%, less than one method's seed spread | **Refuted** |
+| 6 | Cross-window basis stability predicts accuracy | churn spans 26x, accuracy spans 0.3% | **Refuted by our own control.** Retracted below |
+| 7 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does not | **Fails as stated.** The line is still open, section 7 |
+
+## 1. The leakage finding
+
+This is the result the project rests on, and nothing in the later work touches it. A per-mode linear AR(48) probe asks whether each mode can be extrapolated. If modes are predictable to far below the series' own variability, they encode the future.
+
+| decomposition | summed MAE | median per-mode error | % of price sigma | verdict |
+|---|---:|---:|---:|---|
+| **Per-year VMD** (what the literature runs) | 4.288 | 0.205 | 0.42% | **LEAKING** |
+| Causal VMD, window 96 | 15.907 | 1.357 | 2.77% | ok |
+| NVMD v2 | 18.837 | 1.262 | 2.58% | ok |
+| NVMD v3 | 16.159 | 1.606 | 3.28% | ok |
+
+Same algorithm, same data, same K. **Only the decomposition window changed, and per-mode extrapolation error rose 6.6x.**
+
+The second, independent probe is capacity irrelevance. On per-year VMD modes a **625-parameter linear regression (MAE 4.29) beats a 5.7M-parameter CNN-BiLSTM (MAE 13.42)**. When capacity does not help, nothing is being learned -- the modes are being *read*, not forecast.
+
+We reproduced the original **7.11 MAE / 11.58 RMSE** exactly and traced it to this effect. Segment the decomposition causally and it degrades to **~10.7**.
+
+Two mechanisms are entangled in that 7.11, and separating them is worth saying out loud: per-year VMD solves **one** decomposition for the whole year, so it is both leaky *and* perfectly consistent across windows. Causal VMD removes the leakage and gives up the consistency. A fixed filter bank keeps the consistency without the leakage.
+
+## 2. Cost
+
+| | mode generation, one year (~17k windows) |
+|---|---|
+| Causal VMD, window 96, 7 cores | 123.4 s |
+| Causal VMD across the (alpha, K) sweep | **59 s to 18,178 s** |
+| Fixed / learned filter bank | **0.1 s** |
+
+A factor of **600 to 180,000**. The point is not speed for its own sake: the 18-config VMD sweep that made the baseline fair cost 22.5 hours, and the bank equivalent is minutes. **Tuning is affordable for one method and not the other**, which is what makes a fair comparison possible at all.
+
+## 3. The architecture
+
+The decomposition is a differentiable layer, not a preprocessing step. Each mode is parameterised by a centre frequency and a bandwidth -- the same two quantities VMD solves for -- but they are *fixed across windows* rather than re-solved per window.
+
+```mermaid
+flowchart LR
+  X["price window<br/>x : (B, 1, L)"] --> F["rFFT"]
+  G["gap logits (K)"] --> SM["softmax -> cumsum<br/>-> rescale to [0, 0.5]"]
+  SM --> C["centres c_k<br/>strictly increasing<br/>c_1 = DC"]
+  BW["log bandwidth (K)"] --> B["bandwidths bw_k<br/>scaled to local gap"]
+  C --> M["Gaussian masks<br/>normalised to a<br/>partition of unity"]
+  B --> M
+  F --> MUL["multiply"]
+  M --> MUL
+  MUL --> I["irFFT"]
+  I --> Z["K modes<br/>sum exactly to x"]
+  Z --> L1["BiLSTM 128 x 2"]
+  L1 --> H["128 -> 1"]
+  H --> Y["y-hat"]
+```
+
+Three properties hold **by construction**, which is what v2 lacked:
+
+| property | how | why it mattered |
+|---|---|---|
+| centres strictly increasing | cumsum of a softmax | v2 preserved channel order in only 24% of windows |
+| mode 1 pinned to DC | first cumulative gap is zero | v2's lowest learned centre was 0.098 against VMD's 0.002, so trend had no channel |
+| modes sum exactly to the input | masks normalised to a partition of unity | no residual channel, and none can become a junk dump |
+
+The spatial variant adds one R x R mixing matrix **per frequency band**, identity-initialised, so at step 0 it is exactly the temporal model. In `concat` mode the target's own modes pass through untouched and a purely-exogenous block is appended, taking the head from K to 2K inputs.
+
+```mermaid
+flowchart LR
+  P["panel<br/>(B, R, L)"] --> BK["shared filter bank<br/>per channel"]
+  BK --> MM["modes (B, R, K, L)"]
+  MM --> OWN["target's own K modes<br/>lossless"]
+  MM --> CP["per-band coupling A_k<br/>self weight zeroed"]
+  CP --> EXO["exogenous block (B, K, L)<br/>zero at init"]
+  OWN --> CAT["concat -> 2K"]
+  EXO --> CAT
+  CAT --> LS["BiLSTM + head"]
+```
+
+What the earlier design got wrong: the mixed modes **replaced** the target's own. That destroys the partition of unity -- reconstruction error 0.00 to 1.82, with cross terms 2-6.5x the self term -- so the head never saw a faithful price encoding. It corrupted the DC and daily bands, which carry the ~88% of ordinary intervals, while the fast bands gained real spike information. **MAE got worse while RMSE got better**, consistently, and the concat fix is what separated the two.
+
+## 4. Interpretability
+
+| | causal VMD, tuned K=8 | NVMD v3, 9 modes |
+|---|---:|---:|
+| participation ratio | 1.63 | **6.11** |
+| energy in top mode | 77.36% | **28.16%** |
+| longest period represented | 20.1 h | **307.2 h** |
+| top-mode ablation cost | +10.80 MAE | +0.03 MAE |
+| centres ordered | post-hoc omega sort | **by construction, every window** |
+
+VMD's K-mode decomposition is effectively **1.6 modes**: mode 1 holds 77% of the energy and costs +10.80 MAE to ablate, while 6 of 9 modes are removable at under 0.01 MAE. Its mode 1 has bandwidth 0.0631 at centre 0.0249 -- **bandwidth 2.5x the centre**, so the band spans DC. That is a smear, not a band.
+
+At window 96 VMD has **no mode above 20.1 h** and structurally cannot represent multi-day structure. Weekly behaviour has nowhere to go. The bank reaches 307 h, 15x further, with 18.5% of its energy there.
+
+---
+
+*Sections 5 onward are the matched-protocol study: identical rows, one head, one budget, selection on a validation tail of the train year rather than on test.*
 
 Everything below is train 2018 / test 2019, SA1 half-hourly price, window 96, horizon 1, selection on a validation tail of the train year with a 96-window embargo, test scored once from those weights. `honest` is that number; `cherry` is the minimum of test MAE over epochs, the statistic `RESULTS.md` section 13.3 and `benchmark_seeds.py` report.
 
@@ -13,7 +117,7 @@ Everything below is train 2018 / test 2019, SA1 half-hourly price, window 96, ho
 5. **Claim 3 of `RESULTS.md` section 12 fails as stated.** Once VMD is given its residual and selection is honest, spatio-temporal NVMD does not beat VMD. The surviving claim is temporal, not spatial.
 
 
-## 1. Claim 3: does spatio-temporal NVMD beat VMD?
+## 5. Claim 3: does spatio-temporal NVMD beat VMD?
 
 Four arms, identical rows, `R=33` panel, 2 seeds. **This run used VMD without its residual channel**, which is a confound discovered afterwards and corrected in experiment 2.
 
@@ -28,7 +132,7 @@ Four arms, identical rows, `R=33` panel, 2 seeds. **This run used VMD without it
 - Handing classical VMD the same 26 exogenous channels is catastrophic (~18.0), though that arm shares hyperparameters with an 8-channel arm and is arguably under-tuned.
 - The selection effect is an order of magnitude larger for `nvmd_st` than for any other arm. It carries an extra 8x33x33 coupling tensor, so its epoch-to-epoch test curve is noisier, and a minimum over ~30 test evaluations rewards exactly that. **Selecting on test does not subsidise all arms equally; it subsidises the high-variance one.**
 
-## 2. A confound we created, and what it cost
+## 6. A confound we created, and what it cost
 
 VMD does not reconstruct its input exactly. Its residual is **8.5-9.5% of the price standard deviation**. The first runs stored only the K modes, so the VMD arms saw ~91% of the signal while the filter-bank arms, whose masks are a partition of unity, saw 100%.
 
@@ -39,7 +143,7 @@ VMD does not reconstruct its input exactly. Its residual is **8.5-9.5% of the pr
 
 Correcting it returned **0.237 MAE** to VMD, which is more than the entire margin the original comparison claimed. Every arm now carries a residual channel.
 
-## 3. Where neural decomposition earns its place
+## 7. Where neural decomposition earns its place
 
 Two ways to deliver a decomposition to a sequence model:
 
@@ -65,7 +169,7 @@ The isolation is clean because `fixed_geo` and `bank` are **the same Gaussian fi
 
 A likely mechanism, not yet tested: on the precomputed path the value at time t is the *last sample* of the decomposition of window [t-95, t], so a sequence of them is a trajectory of last samples. The internal path hands the model the actual mode waveform across one consistent window.
 
-## 4. Retracted: basis stability predicts accuracy
+## 8. Retracted: basis stability predicts accuracy
 
 We proposed that what separates these methods is whether the basis is re-solved in every window, measured as **churn** -- the fraction of adjacent-window steps in which some mode's spectral centroid moves more than half a band gap.
 
@@ -90,7 +194,7 @@ The hypothesis was rejected by a control that was part of the design: `bank` hol
 
 Channels are not merely drifting, they intermittently do not exist.
 
-## 5. The spatially-encoded variant
+## 9. The spatially-encoded variant
 
 Both arms are the same model on the **internal** path, differing only in whether the per-band cross-channel coupling is enabled. So this sits inside the architecture family that wins section 3, and isolates the spatial encoding itself.
 
@@ -134,14 +238,14 @@ The control alone varies by **0.222** across two seeds, and validation understat
 
 So any h=1 comparison between price-only, trailing and forward exogenous is **inside the noise floor by construction**. We record the row for completeness and read nothing into it. This is also why the earlier conclusion that the spatial panel was useless was never evidence of absence -- it was measured here.
 
-## 6. Seed noise dominates method choice
+## 10. Seed noise dominates method choice
 
 `vmd_price_res` across seeds: 14.324 / 14.440, a spread of **0.116**.
 Within the matched precomputed path the five decomposition families span roughly **0.04**. One method's seed-to-seed variation is several times the difference between methods.
 
 Any claim of the form "our decomposition beats VMD by x%" that is not paired across multiple seeds is reporting the seed.
 
-## 7. Still running
+## 11. Still running
 
 | experiment | purpose | done |
 |---|---|---:|
@@ -155,7 +259,7 @@ Any claim of the form "our decomposition beats VMD by x%" that is not paired acr
 |---|---:|---:|
 | `h1_price` | 14.277 ± 0.157 | -- |
 
-## 8. Caveats
+## 12. Caveats
 
 - One region, two years, one target, horizon 1. The horizon matters: `RESULTS.md` section 11 records h=1 as **saturated** -- persistence scores 14.40 against a best model of ~14.3 -- so everything above is measured where there is ~0.1 MAE of room. The spatial experiment tests h=6 for exactly this reason.
 - `vmd_panel` shares hyperparameters with arms that have 8 inputs rather than 215, so its collapse shows that naive per-channel concatenation hurts, not that joint decomposition is superior to multi-channel VMD.
