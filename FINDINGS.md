@@ -265,6 +265,8 @@ Four arms, identical rows, `R=33` panel, 2 seeds. **This run used VMD without it
 
 So the surviving statement is **temporal**: joint decomposition beats VMD by 0.219, and turning on spatial coupling gives back more than that.
 
+> **Superseded by the objective finding in section 9.** Every number in this section is MSE-trained. Under Huber the spatial arm reaches 14.038 against a matched baseline of 14.232, so the sentence above holds for these runs and not for those. The comparison that decides it is the matched-loss one, not this table.
+
 - Spatial coupling **loses** to temporal-only on both seeds and both selection rules.
 - Handing classical VMD the same 26 exogenous channels is catastrophic (~18.0), though that arm shares hyperparameters with an 8-channel arm and is arguably under-tuned.
 - The selection effect differs by a factor of ten across these four arms, from +0.011 to +0.170. **Selecting on test is therefore not a neutral transformation: it moves some arms much further than others, so a table built that way can reorder methods.** See the retraction in section 8 for what we can and cannot say about *why*.
@@ -340,11 +342,11 @@ Both arms are the same model on the **internal** path, differing only in whether
 | `nvmd_temporal` | 14.220 | 14.106 | **14.163** | 0.114 | +0.016 |
 | `nvmd_st` | 14.479 | 14.482 | **14.480** | 0.003 | +0.170 |
 
-**Spatial encoding costs +0.317 MAE.** The larger of the two arms' seed spreads is 0.114, so the penalty is about 3x the noise scale -- not decisive on two seeds, but consistent in sign and size across both. It also lands worse than every arm on the precomputed path except EMD, which means enabling spatial coupling gives back more than the architecture won.
+**Spatial encoding costs +0.317 MAE — under MSE.** *(The rest of this subsection records the MSE-trained picture; the subsection after it shows the objective was the confound and reverses the sign of this result. Kept because the reasoning about redundant conditioning and horizon still applies.)* The larger of the two arms' seed spreads is 0.114, so the penalty is about 3x the noise scale -- not decisive on two seeds, but consistent in sign and size across both. It also lands worse than every arm on the precomputed path except EMD, which means enabling spatial coupling gives back more than the architecture won.
 
 One measurement bears on why, and points at redundant conditioning rather than absent signal:
 
-- `attic/RESULTS-superseded.md` section 13.4 measured the exogenous block taking 60-95% of head input variance while buying ~1% MAE. A block that dominates the input and moves the metric that little is behaving as redundant conditioning.
+- `attic/RESULTS-superseded.md` section 13.4 measured the exogenous block taking 60-95% of head input variance while buying ~1% MAE. A block that dominates the input and moves the metric that little is behaving as redundant conditioning. *(That variance measurement stands. The same section's reading of **which band** each driver lives in does not -- see the withdrawal in section 12.)*
 
 *An earlier draft also blamed the arm's large selection effect on its 8x33x33 coupling tensor. That does not hold: across the stability run the selection effect ranges +0.000 to +0.329 with no relation to parameter count, so we have no validated mechanism for it and only report that it is arm-dependent.*
 
@@ -379,14 +381,50 @@ and buys nothing; the 0.74 spread is six times the seed noise of section 10 and
 larger than any margin this project has claimed. Note what this does *not* say:
 within the arm the loss moves MAE only. RMSE sits at 25.00-25.17 throughout.
 
-Against the residual-corrected baseline of section 6, both metrics now favour
-the spatial arm:
+**The mechanism, and why it is an interaction rather than "Huber is better."**
+MSE has gradient $\partial L/\partial\hat y = -2e$, so a sample with $e=50$
+pulls a hundred times harder than one with $e=5$. Half-hourly SA1 price is
+spike-heavy, so that weighting is not a technicality. `--concat` widens the
+head's input from $K$ to $2K$: the spatial arm has a block of capacity the
+temporal arm does not, and MSE decides where it goes. It goes to the tail.
+Huber is quadratic near zero and linear beyond $\beta$, so the tail stops
+dominating and the same block can serve the bulk instead.
+
+The prediction that follows is testable and holds: **an arm with less spare
+capacity should move less when the objective changes.**
+
+| arm | head inputs | MAE under MSE | under Huber | moved by |
+|---|---:|---:|---:|---:|
+| `vmd_price_res` | $K+1 = 9$ | 14.372 | 14.232 | **0.140** |
+| `nvmd_st` | $2K = 16$ | 14.480 | 14.038 | **0.442** |
+
+The baseline moves a third as far, and its RMSE does not improve at all
+(26.427 -> 26.564). So the story is not that Huber is a better objective -- it
+made `nvmd_temporal` worse, 14.163 -> 14.258 -- but that
+
+> for a representation with spare capacity, MSE's tail-dominated gradients
+> decide *where that capacity is spent*, and Huber changes the answer.
+
+**This is a mechanism consistent with every number above, not a verified
+cause.** What is established is the interaction: the objective moves the wide
+arm three times as far as the narrow one, and in opposite directions on the two
+metrics. Attributing that specifically to tail-versus-bulk allocation would need
+the error decomposed by $|s|$ stratum, which has not been run.
+
+Against the residual-corrected baseline of section 6, **trained on the same
+objective**, both metrics favour the spatial arm:
 
 | arm | MAE | RMSE | seeds |
 |---|---:|---:|---:|
 | `vmd_price_res` (MSE) | 14.372 | 26.427 | 3 |
+| `vmd_price_res` (Huber beta=1.0) | 14.232 | 26.564 | 2 |
 | **`nvmd_st` (Huber beta=1.0)** | **14.038** | **25.048** | 2 |
-| | **-2.3%** | **-5.2%** | |
+| | **-1.4%** | **-5.7%** | vs the matched baseline |
+
+Re-running the baseline on the same loss was the outstanding objection and it
+costs part of the margin: MAE goes from -2.3% against the MSE baseline to
+**-1.4%** against the matched one. RMSE goes the other way, -5.2% to **-5.7%**,
+because Huber does not help the baseline's RMSE at all.
 
 So claim 5 as stated in the summary table -- *"once VMD gets its residual, it
 does not"* -- was true of the MSE runs and is not true of these. The spatial arm
@@ -395,10 +433,9 @@ was losing by 0.098; it now wins by 0.334, and the objective change is worth
 
 **Three things stop this being final.**
 
-1. **The baseline has not been re-run under the same objective.** 14.372 is
-   MSE-trained. By the argument this section just made -- the objective is worth
-   more than the margin -- a baseline on a different loss is not comparable.
-   Re-running `vmd_price_res` under Huber and L1 is in flight.
+1. ~~**The baseline has not been re-run under the same objective.**~~
+   **Done.** Under Huber the baseline reaches 14.232 / 26.564 and the margin
+   becomes -1.4% MAE, -5.7% RMSE. The L1 pair is still running.
 2. **Two seeds against a seed noise of 0.116** (section 10). The two Huber seeds
    are 13.970 and 14.105, a spread of 0.135, so the 0.334 margin is about three
    times the noise. The L1 and Huber-0.5 rows are single-seed and cannot be read
