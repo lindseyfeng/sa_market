@@ -8,10 +8,18 @@ cache/
 data/raw/
 *.csv
 
-# Checkpoints, logs, figures
+# Checkpoints and logs
 runs/
 logs/
+
+# Figures are ignored by default -- most are throwaway diagnostics -- but the
+# ones FINDINGS.md embeds must be tracked or the document has broken images.
 figures/
+!figures/architecture_nvmd_st.png
+!figures/band_comparison.png
+!figures/decomposed_waves.png
+!figures/drift_and_coverage.png
+!figures/loss_sweep.png
 *.pt
 *.log
 nohup.out
