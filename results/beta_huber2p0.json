@@ -10,5 +10,17 @@
     "test_rmse_cherry": 24.45887871557427,
     "epoch_cherry": 17,
     "n_feat": 33
+  },
+  {
+    "arm": "nvmd_st",
+    "seed": 2,
+    "val_mae": 13.077922870276447,
+    "test_mae": 14.428351459688352,
+    "test_rmse": 25.38673493585409,
+    "epoch": 8,
+    "test_mae_cherry": 14.140201835261966,
+    "test_rmse_cherry": 24.70042479681223,
+    "epoch_cherry": 18,
+    "n_feat": 33
   }
 ]
