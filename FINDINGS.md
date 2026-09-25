@@ -245,7 +245,37 @@ Regenerate with `python3 -m report.plot_bands`.
 
 ## 5. Claim 3: does spatio-temporal NVMD beat VMD?
 
-Four arms, identical rows, `R=33` panel, 2 seeds. **This run used VMD without its residual channel**, which is a confound discovered afterwards and corrected in section 6.
+Yes, on both metrics, but only once two confounds are removed. Neither was
+visible in the first run, and each was worth more than the margin under test.
+
+**The answer, stated once.** Four arms, identical rows, `R=33` panel, matched
+objective, residual returned to VMD:
+
+| arm | MAE | RMSE | seeds |
+|---|---:|---:|---:|
+| `vmd_price_res` (Huber) | 14.232 | 26.564 | 2 |
+| **`nvmd_st` (Huber)** | **14.038** | **25.048** | 2 |
+| | **-1.4%** | **-5.7%** | |
+
+Getting to that line took two corrections, and the route matters more than the
+number because each correction is a trap the field walks into.
+
+**Correction 1: VMD was missing 8.5-9.5% of the signal.** The first four-arm run
+stored only VMD's $K$ modes. VMD does not reconstruct exactly, so its arm saw
+~91% of the price while the filter-bank arms, whose masks are a partition of
+unity, saw 100%. Returning the residual moves that arm from 14.524 to **14.382**
+-- 0.237 MAE, more than the entire margin the run had claimed. Section 6 has the
+measurement.
+
+**Correction 2: the objective disagreed with the metric.** Training used
+`F.mse_loss` while selection and reporting used MAE. That is not neutral for an
+arm with spare capacity, and `--concat` gives the spatial arm a block the others
+do not have. Section 9 has the mechanism and the test of it. Under a matched
+Huber objective the spatial arm goes from 14.480 to **14.038** while the
+baseline moves only 14.372 to 14.232.
+
+**What the original MSE run said, for the record.** These numbers are correct
+for their protocol and wrong as a verdict on the architecture:
 
 | arm | information | decomposition | honest | cherry | selection effect |
 |---|---|---|---:|---:|---:|
@@ -254,22 +284,29 @@ Four arms, identical rows, `R=33` panel, 2 seeds. **This run used VMD without it
 | `vmd_price` | temporal | univariate VMD, no residual | **14.524** ± 0.052 | 14.505 | +0.019 |
 | `vmd_panel` | spatial | univariate VMD x 26 | **18.033** ± 0.303 | 18.022 | +0.011 |
 
-**Read this table with the next section.** As it stands `nvmd_st` (14.480) appears to beat `vmd_price` (14.524), which would make claim 3 true. It does not survive: `vmd_price` here is missing its residual channel, and once that is returned the same arm scores **14.382**, which beats `nvmd_st` by 0.098. The corrected comparison:
+Read as it stands, `nvmd_st` (14.480) beats `vmd_price` (14.524) and claim 3 is
+true. Read with the residual returned, `vmd_price_res` (14.382) beats
+`nvmd_st` and claim 3 is false. Read with the objective matched as well, the
+spatial arm wins again. **Three protocols, three verdicts, one architecture.**
+That is the reason this document reports protocol before result.
 
-| arm | honest MAE | note |
-|---|---:|---|
-| `nvmd_temporal` | **14.163** | joint decomposition, no spatial coupling |
-| `vmd_price_res` | 14.382 | VMD with its residual channel returned |
-| `nvmd_st` | 14.480 | joint decomposition **plus** spatial coupling |
-| `vmd_price` | 14.524 | VMD without the residual -- the confounded number |
+**Two findings in the table that survive every correction.**
 
-So the surviving statement is **temporal**: joint decomposition beats VMD by 0.219, and turning on spatial coupling gives back more than that.
+- **Handing classical VMD the same 26 exogenous channels is catastrophic**,
+  ~18.0 against 14.4 for the same channels through a joint decomposition. Having
+  the data is not the same as being able to use it. That arm shares
+  hyperparameters with an 8-channel arm and is arguably under-tuned, but not by
+  3.6 MAE.
+- **The selection effect differs by a factor of ten across arms**, +0.011 to
+  +0.170. Selecting on test is not a neutral transformation: it moves some arms
+  much further than others, so a table built that way can reorder methods. See
+  the retraction in section 8 for what can and cannot be said about *why*.
 
-> **Superseded by the objective finding in section 9.** Every number in this section is MSE-trained. Under Huber the spatial arm reaches 14.038 against a matched baseline of 14.232, so the sentence above holds for these runs and not for those. The comparison that decides it is the matched-loss one, not this table.
-
-- Spatial coupling **loses** to temporal-only on both seeds and both selection rules.
-- Handing classical VMD the same 26 exogenous channels is catastrophic (~18.0), though that arm shares hyperparameters with an 8-channel arm and is arguably under-tuned.
-- The selection effect differs by a factor of ten across these four arms, from +0.011 to +0.170. **Selecting on test is therefore not a neutral transformation: it moves some arms much further than others, so a table built that way can reorder methods.** See the retraction in section 8 for what we can and cannot say about *why*.
+**Still open.** Two seeds against a seed noise of 0.116 (section 10). The L1
+pair of the matched baseline is still running. And `nvmd_temporal` is *not* in
+the headline table because Huber makes it worse, 14.163 to 14.258 -- the
+objective that lets the spatial arm win is not a free improvement, which is the
+substance of section 9.
 
 ## 6. A confound we created, and what it cost
 
@@ -335,14 +372,28 @@ Channels are not merely drifting, they intermittently do not exist.
 
 ## 9. The spatially-encoded variant
 
-Both arms are the same model on the **internal** path, differing only in whether the per-band cross-channel coupling is enabled. So this sits inside the architecture family that wins section 7, and isolates the spatial encoding itself.
+Both arms are the same model on the **internal** path, differing only in whether
+the per-band cross-channel coupling is enabled. So this sits inside the
+architecture family that wins section 7, and isolates the spatial encoding
+itself.
+
+**The short version.** Under MSE the spatial arm loses by 0.317 and the obvious
+reading is that spatial coupling does not pay. That reading is an artefact of
+the objective: MSE decides where the arm's extra capacity goes, and it sends it
+to the tail. Under a matched Huber objective the same arm wins, and the
+mechanism makes a prediction that holds -- a narrower arm moves a third as far
+when the objective changes. The rest of this section is that argument in order.
 
 | arm | seed 1 | seed 2 | mean | seed spread | selection effect |
 |---|---:|---:|---:|---:|---:|
 | `nvmd_temporal` | 14.220 | 14.106 | **14.163** | 0.114 | +0.016 |
 | `nvmd_st` | 14.479 | 14.482 | **14.480** | 0.003 | +0.170 |
 
-**Spatial encoding costs +0.317 MAE — under MSE.** *(The rest of this subsection records the MSE-trained picture; the subsection after it shows the objective was the confound and reverses the sign of this result. Kept because the reasoning about redundant conditioning and horizon still applies.)* The larger of the two arms' seed spreads is 0.114, so the penalty is about 3x the noise scale -- not decisive on two seeds, but consistent in sign and size across both. It also lands worse than every arm on the precomputed path except EMD, which means enabling spatial coupling gives back more than the architecture won.
+**Under MSE, spatial encoding costs +0.317 MAE. The objective is why.** The rest
+of this subsection is the MSE-trained picture, which stood until the sweep below
+overturned its sign. It is kept because the reasoning about redundant
+conditioning and about horizon survives the correction and still bounds what the
+spatial line can claim. The larger of the two arms' seed spreads is 0.114, so the penalty is about 3x the noise scale -- not decisive on two seeds, but consistent in sign and size across both. It also lands worse than every arm on the precomputed path except EMD, which means enabling spatial coupling gives back more than the architecture won.
 
 One measurement bears on why, and points at redundant conditioning rather than absent signal:
 
