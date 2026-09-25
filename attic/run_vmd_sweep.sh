@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fair-baseline sweep for causal VMD (RESULTS.md section 7, item 1).
+# Fair-baseline sweep for causal VMD (attic/RESULTS-superseded.md section 7, item 1).
 # The NVMD>VMD claim currently rests on ONE untuned VMD config (alpha=2000,K=12).
 # This sweeps alpha x K at the matched window W=96 so the baseline gets the same
 # tuning courtesy NVMD got in section 6.

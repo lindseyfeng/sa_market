@@ -41,7 +41,7 @@ def main():
     L.append("# Three-arm comparison: does spatio-temporal NVMD beat VMD?\n")
     L.append(f"*generated {datetime.now():%Y-%m-%d %H:%M} -- "
              f"{n_done}/{n_total} runs complete*\n")
-    L.append("Settles claim 3 of `RESULTS.md` section 12, which that document "
+    L.append("Settles claim 3 of `attic/RESULTS-superseded.md` section 12, which that document "
              "records as **never run**. Every arm sits on identical rows, "
              "windows, head, optimiser and budget, so the numbers below are "
              "the first that may be compared directly.\n")
@@ -52,7 +52,7 @@ def main():
     L.append("- **honest** -- weights chosen on the validation tail of the "
              "train year, test scored once from them")
     L.append("- **cherry** -- the minimum over epochs of test MAE, which is "
-             "the statistic `RESULTS.md` section 13.3 and "
+             "the statistic `attic/RESULTS-superseded.md` section 13.3 and "
              "`benchmark_seeds.py` report\n")
     L.append("Neither guarantees generalisation on one test year and one "
              "region. The **gap** between them is the size of the selection "
@@ -110,7 +110,7 @@ def main():
     L.append("| seeds | 1, 2, 3 |")
 
     L.append("\n## Why this had to be run\n")
-    L.append("`RESULTS.md` section 12 states the problem plainly: every VMD "
+    L.append("`attic/RESULTS-superseded.md` section 12 states the problem plainly: every VMD "
              "comparison in that document used *temporal-only* NVMD on the "
              "price-only per-year CSVs, while every spatial result was "
              "NVMD-against-NVMD on the compound panel. Different data, "

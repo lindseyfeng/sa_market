@@ -2,7 +2,7 @@
 """
 Causal VMD modes for every channel of the compound panel.
 
-This is arm 2 of the three-arm comparison in RESULTS.md section 12: give
+This is arm 2 of the three-arm comparison in attic/RESULTS-superseded.md section 12: give
 classical VMD the same exogenous panel the spatio-temporal NVMD gets, one
 univariate decomposition per channel.  Arm 1 (price only) is the SA1_price
 slice of the same output, so both VMD arms come from one pass.

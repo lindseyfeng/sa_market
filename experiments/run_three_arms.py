@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-The three-arm comparison RESULTS.md section 12 says has never been run.
+The three-arm comparison attic/RESULTS-superseded.md section 12 says has never been run.
 
 Claim 3 -- "spatio-temporal NVMD beats VMD" -- cannot be composed out of
 "spatial NVMD beats temporal NVMD" (measured on the compound panel) and
@@ -18,7 +18,7 @@ vmd_price vs nvmd_st is claim 3.  vmd_panel is the stronger test: it isolates
 *joint* decomposition from merely *having* the exogenous channels.
 nvmd_temporal is the free fourth corner of the 2x2.
 
-Protocol notes that differ from the numbers already in RESULTS.md section 13:
+Protocol notes that differ from the numbers already in attic/RESULTS-superseded.md section 13:
 
   * Every arm is restricted to window ends at row >= 190 of its year, because
     causal VMD modes do not exist until row W-1 = 95 and a window needs 96 of
@@ -369,7 +369,7 @@ def main():
     ap.add_argument("--arms", default=",".join(ARMS))
     # CPU by default: MPS has no rfft, so the NVMD arms cannot run there, and
     # the arms must share a device.  This also matches how the numbers already
-    # in RESULTS.md were produced.
+    # in attic/RESULTS-superseded.md were produced.
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--threads", type=int, default=6,
                     help="torch intra-op threads; leave cores for the desktop")

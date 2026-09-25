@@ -1,3 +1,15 @@
+> # SUPERSEDED — do not read this as the current picture
+>
+> This is the **older running log**. Several of its comparisons were later found
+> confounded: the VMD arms were missing their residual channel, and sections 2,
+> 8 and 13.3 select the epoch on the **test** year.
+>
+> **The current picture is [`FINDINGS.md`](../FINDINGS.md).** Where the two
+> disagree, FINDINGS is right. This file is kept only because FINDINGS and
+> THREE_ARMS cite its section numbers.
+
+---
+
 # NVMD: what is established
 
 South Australia half-hourly price (AUD/MWh, AEMO NEM), train 2018 / test 2019.

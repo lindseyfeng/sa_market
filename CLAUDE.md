@@ -3,9 +3,12 @@
 AEMO NEM, South Australia, half-hourly RRP. Train 2018, test 2019 unless a file
 says otherwise.
 
-**Read [`FINDINGS.md`](FINDINGS.md) first.** It is the current picture and
-supersedes `RESULTS.md` wherever they disagree; `RESULTS.md` is the older
-running log and several of its comparisons were later found confounded.
+**[`FINDINGS.md`](FINDINGS.md) is the only current document.** Read it first
+and treat it as authoritative. The older running log has been moved to
+`attic/RESULTS-superseded.md` and carries a banner saying so -- it is kept only
+because FINDINGS and THREE_ARMS cite its section numbers, and several of its
+comparisons were later found confounded (VMD without its residual; epoch
+selected on test).
 
 ## Naming
 
@@ -38,7 +41,7 @@ within 0.002, basis churn spanning 26× with no effect. Vary what the bands
   sigma. Dropping it handed VMD ~91% while a partition-of-unity bank got 100%,
   and correcting it returned 0.237 MAE — more than the margin being claimed.
 - **Never select on test.** `benchmark.py`'s `va_dl` is built from the *test*
-  CSV, so sections 2, 8 and 13.3 of `RESULTS.md` report a minimum over epochs.
+  CSV, so sections 2, 8 and 13.3 of `attic/RESULTS-superseded.md` report a minimum over epochs.
   That does not subsidise all arms equally: it subsidises the high-variance one
   (+0.170 for the spatial arm against +0.016 elsewhere).
 - **Seed noise dominates.** One method varies 0.116 across seeds while five

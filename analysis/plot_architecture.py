@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-r"""NVMD-ST as implemented, drawn from models/nvmd_st.py + nvmd_v3.py.
+r"""The band-parameterised filter bank with per-band spatial coupling.
+
+Drawn from models/nvmd_st.py + nvmd_v3.py.  The module names still say NVMD;
+CLAUDE.md records why the method should not be called that: it shares no
+objective, no algorithm and no optimisation with VMD.
 
 The visual centre is the per-band coupling: standard spatio-temporal models
 learn one adjacency A_ij; this learns A_ij^(k), one per frequency band, so
@@ -46,7 +50,7 @@ note(31, 55.0, r"reshape $(B{\cdot}R,1,L)$ — one shared bank, every channel", 
 # --------------------------------------------------------------- 2. the bank
 ax.add_patch(FancyBboxPatch((2, 25.5), 46, 25, boxstyle="round,pad=0.5",
              facecolor="#FAFBFC", edgecolor=NAVY, lw=1.4, ls="--", zorder=0))
-ax.text(25, 48.3, "StructuredSpectralNVMD  ·  shared across all R channels",
+ax.text(25, 48.3, "band-parameterised filter bank  ·  shared across all R channels",
         ha="center", fontsize=8.6, color=NAVY, weight="bold")
 box(4.5, 39.5, 19, 6.6, r"gap logits $\ell_k$  (K=8)" "\n" r"geometric init, ratio 1.8", fc=LEARN, fs=7.6)
 box(26.5, 39.5, 19, 6.6, r"log bandwidth $\log b_k$" "\n" r"floor $0.25\,\mathrm{gap}_k$", fc=LEARN, fs=7.6)
@@ -131,7 +135,7 @@ for i, (c, e, t) in enumerate([(LEARN, NAVY, "learned"), (FIXED, NAVY, "determin
                  facecolor=c, edgecolor=e, lw=1.0))
     ax.text(89 + i * 15, 3.5, t, fontsize=7.2, va="center")
 
-fig.suptitle("NVMD-ST  ·  scale-conditioned spatial coupling", fontsize=12,
+fig.suptitle("Band-parameterised filter bank  ·  scale-conditioned spatial coupling", fontsize=12,
              color=NAVY, y=0.975, weight="bold")
 fig.savefig("figures/architecture_nvmd_st.png", dpi=220, bbox_inches="tight", facecolor="white")
 fig.savefig("figures/architecture_nvmd_st.pdf", bbox_inches="tight", facecolor="white")

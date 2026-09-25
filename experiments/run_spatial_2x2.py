@@ -4,7 +4,7 @@ Is there spatial information, or were we looking in the wrong place?
 
 Two factors, crossed:
 
-    horizon    h=1   the task RESULTS.md calls saturated: persistence scores
+    horizon    h=1   the task attic/RESULTS-superseded.md calls saturated: persistence scores
                      14.40 and the best model 14.3, so there is ~0.1 MAE of
                      room for anything to win
                h=6   where section 11a measured the spatial coupling gain at

@@ -262,7 +262,7 @@ A("**Defect 3: everything slower than a day lands in the smear.** A 96-sample "
   "The bank\'s slowest resolvable band sits at **26.9 h**, with a separate "
   "sub-resolution slot at 75 h, so slow drift and the daily cycle occupy "
   "different channels instead of being merged into one.\n")
-A("*Correction to `RESULTS.md` section 3, which reports a \"longest period "
+A("*Correction to `attic/RESULTS-superseded.md` section 3, which reports a \"longest period "
   "represented\" of 307.2 h for the 9-mode configuration and calls it 15x "
   "VMD\'s reach. A 48-hour window cannot resolve a 307-hour period. That "
   "number describes a filter\'s nominal centre, not resolvable content, and "
@@ -346,7 +346,7 @@ A("**Sections 5 onward are the matched-protocol study.** Train 2018 / test "
   "one budget. Selection on a validation tail of the train year with a "
   "96-window embargo; test scored once from those weights. `honest` is that "
   "number. `cherry` is the minimum of test MAE over epochs, which is the "
-  "statistic `RESULTS.md` section 13.3 and `benchmark_seeds.py` report, kept "
+  "statistic `attic/RESULTS-superseded.md` section 13.3 and `benchmark_seeds.py` report, kept "
   "alongside so the two sets of tables can be reconciled.\n")
 
 # ---------------------------------------------------------------- experiment 1
@@ -415,7 +415,7 @@ A("- **internal** -- hand the model the raw signal window and decompose it "
 A("- **precomputed** -- run the decomposition offline per window, keep the "
   "last sample of each mode, and feed the resulting per-timestep mode vectors. "
   "This is what the entire decomposition-plus-deep-learning literature does, "
-  "including every comparison in `RESULTS.md` sections 2, 8 and 10.\n")
+  "including every comparison in `attic/RESULTS-superseded.md` sections 2, 8 and 10.\n")
 if STAB:
     A("| arm | basis | delivery | churn | honest | seeds |")
     A("|---|---|---|---:|---:|---:|")
@@ -512,7 +512,7 @@ if st and tp:
       f"gives back more than the architecture won.\n")
     A("One measurement bears on why, and points at redundant conditioning "
       "rather than absent signal:\n")
-    A("- `RESULTS.md` section 13.4 measured the exogenous block taking 60-95% "
+    A("- `attic/RESULTS-superseded.md` section 13.4 measured the exogenous block taking 60-95% "
       "of head input variance while buying ~1% MAE. A block that dominates the "
       "input and moves the metric that little is behaving as redundant "
       "conditioning.\n")
@@ -523,7 +523,7 @@ if st and tp:
       "report that it is arm-dependent.*\n")
     A("**This is a verdict on the current design, not on spatial information.** "
       "Two reasons to withhold judgement, both testable and both in flight:\n")
-    A("1. **Horizon.** Every number above is h=1, which `RESULTS.md` section 11 "
+    A("1. **Horizon.** Every number above is h=1, which `attic/RESULTS-superseded.md` section 11 "
       "records as saturated -- persistence 14.40 against a best model of ~14.3. "
       "Section 11a measured the spatial coupling gain at **-2.21 MAE at h=6**, "
       "decaying to zero by h=48. Testing a 2.21-point effect in a 0.1-point "
@@ -629,7 +629,7 @@ if SPAT:
 
 A("\n## 12. Caveats\n")
 A("- One region, two years, one target, horizon 1. The horizon matters: "
-  "`RESULTS.md` section 11 records h=1 as **saturated** -- persistence scores "
+  "`attic/RESULTS-superseded.md` section 11 records h=1 as **saturated** -- persistence scores "
   "14.40 against a best model of ~14.3 -- so everything above is measured "
   "where there is ~0.1 MAE of room. The spatial experiment tests h=6 for "
   "exactly this reason.")
@@ -643,7 +643,7 @@ A("- The forward-exogenous condition in the spatial experiment uses "
   "**reanalysis at the target time**. It is an upper bound on what a real "
   "forecast could deliver, and is the right measurement for \"is the "
   "information there\", not for \"what would this earn\".")
-A("- Claims 1 and 2 of `RESULTS.md` are untouched by any of this. They do not "
+A("- Claims 1 and 2 of `attic/RESULTS-superseded.md` are untouched by any of this. They do not "
   "depend on epoch selection, on the residual channel, or on the delivery "
   "path.")
 

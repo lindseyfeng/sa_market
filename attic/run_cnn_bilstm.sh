@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fills RESULTS.md section 7, item 2: CNN-BiLSTM is absent from every multi-seed
+# Fills attic/RESULTS-superseded.md section 7, item 2: CNN-BiLSTM is absent from every multi-seed
 # table, and it is the closest analogue to the published baseline -- plus the one
 # cell where NVMD lost on a single seed (18.75 vs 17.36).  Its absence reads as
 # selection, so it has to be measured whichever way it lands.

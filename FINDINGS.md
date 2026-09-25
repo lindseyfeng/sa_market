@@ -127,7 +127,8 @@ flowchart LR
   H --> Y["ŷ"]
 ```
 
-**Figure: `figures/architecture_nvmd_st.png`** (`analysis/plot_architecture.py`),
+**Figure: `figures/architecture_nvmd_st.png`** — titled as a
+band-parameterised filter bank, per the naming note in `CLAUDE.md`; (`analysis/plot_architecture.py`),
 drawn from the code rather than from memory. Its visual centre is the per-band
 coupling, for the reason section 12 gives: $A_{ij}^{(k)}$ rather than $A_{ij}$ is
 the part of this design that the literature does not already contain.
@@ -172,7 +173,7 @@ This section is what makes the later null results legible. Swapping decompositio
 
 **Defect 3: everything slower than a day lands in the smear.** A 96-sample window at half-hourly sampling is **48 hours long**, so nothing slower than that is a resolvable oscillation. Inside that limit VMD's slowest band is centred at **21.8 h** -- the daily cycle is its slowest channel, and everything below that frequency falls into the mode-1 smear from defect 1. The bank's slowest resolvable band sits at **26.9 h**, with a separate sub-resolution slot at 75 h, so slow drift and the daily cycle occupy different channels instead of being merged into one.
 
-*Correction to `RESULTS.md` section 3, which reports a "longest period represented" of 307.2 h for the 9-mode configuration and calls it 15x VMD's reach. A 48-hour window cannot resolve a 307-hour period. That number describes a filter's nominal centre, not resolvable content, and overstates the difference. The defensible version is the one above.*
+*Correction to `attic/RESULTS-superseded.md` section 3, which reports a "longest period represented" of 307.2 h for the 9-mode configuration and calls it 15x VMD's reach. A 48-hour window cannot resolve a 307-hour period. That number describes a filter's nominal centre, not resolvable content, and overstates the difference. The defensible version is the one above.*
 
 ![drift and coverage](figures/drift_and_coverage.png)
 
@@ -224,7 +225,7 @@ Regenerate with `python3 -m report.plot_bands`.
 
 ---
 
-**Sections 5 onward are the matched-protocol study.** Train 2018 / test 2019, SA1 half-hourly price, window 96, horizon 1, identical rows, one head, one budget. Selection on a validation tail of the train year with a 96-window embargo; test scored once from those weights. `honest` is that number. `cherry` is the minimum of test MAE over epochs, which is the statistic `RESULTS.md` section 13.3 and `benchmark_seeds.py` report, kept alongside so the two sets of tables can be reconciled.
+**Sections 5 onward are the matched-protocol study.** Train 2018 / test 2019, SA1 half-hourly price, window 96, horizon 1, identical rows, one head, one budget. Selection on a validation tail of the train year with a 96-window embargo; test scored once from those weights. `honest` is that number. `cherry` is the minimum of test MAE over epochs, which is the statistic `attic/RESULTS-superseded.md` section 13.3 and `benchmark_seeds.py` report, kept alongside so the two sets of tables can be reconciled.
 
 
 ## 5. Claim 3: does spatio-temporal NVMD beat VMD?
@@ -269,7 +270,7 @@ Correcting it returned **0.237 MAE** to VMD, which is more than the entire margi
 Two ways to deliver a decomposition to a sequence model:
 
 - **internal** -- hand the model the raw signal window and decompose it inside the forward pass, as a differentiable layer. The model sees each mode's waveform across one consistent window.
-- **precomputed** -- run the decomposition offline per window, keep the last sample of each mode, and feed the resulting per-timestep mode vectors. This is what the entire decomposition-plus-deep-learning literature does, including every comparison in `RESULTS.md` sections 2, 8 and 10.
+- **precomputed** -- run the decomposition offline per window, keep the last sample of each mode, and feed the resulting per-timestep mode vectors. This is what the entire decomposition-plus-deep-learning literature does, including every comparison in `attic/RESULTS-superseded.md` sections 2, 8 and 10.
 
 | arm | basis | delivery | churn | honest | seeds |
 |---|---|---|---:|---:|---:|
@@ -328,13 +329,13 @@ Both arms are the same model on the **internal** path, differing only in whether
 
 One measurement bears on why, and points at redundant conditioning rather than absent signal:
 
-- `RESULTS.md` section 13.4 measured the exogenous block taking 60-95% of head input variance while buying ~1% MAE. A block that dominates the input and moves the metric that little is behaving as redundant conditioning.
+- `attic/RESULTS-superseded.md` section 13.4 measured the exogenous block taking 60-95% of head input variance while buying ~1% MAE. A block that dominates the input and moves the metric that little is behaving as redundant conditioning.
 
 *An earlier draft also blamed the arm's large selection effect on its 8x33x33 coupling tensor. That does not hold: across the stability run the selection effect ranges +0.000 to +0.329 with no relation to parameter count, so we have no validated mechanism for it and only report that it is arm-dependent.*
 
 **This is a verdict on the current design, not on spatial information.** Two reasons to withhold judgement, both testable and both in flight:
 
-1. **Horizon.** Every number above is h=1, which `RESULTS.md` section 11 records as saturated -- persistence 14.40 against a best model of ~14.3. Section 11a measured the spatial coupling gain at **-2.21 MAE at h=6**, decaying to zero by h=48. Testing a 2.21-point effect in a 0.1-point window cannot resolve it.
+1. **Horizon.** Every number above is h=1, which `attic/RESULTS-superseded.md` section 11 records as saturated -- persistence 14.40 against a best model of ~14.3. Section 11a measured the spatial coupling gain at **-2.21 MAE at h=6**, decaying to zero by h=48. Testing a 2.21-point effect in a 0.1-point window cannot resolve it.
 2. **The exogenous channels are fed as history, not as forecasts.** `PanelWindowDataset` hands the model every channel over the trailing window and asks it to predict h steps ahead. Real load and price forecasting conditions on the *forecast* weather and demand for the target interval. Trailing weather is largely already priced into the recent spread; forward weather is where the incremental information should be.
 
 
@@ -495,7 +496,7 @@ A standard STGNN learns one adjacency $A_{ij}$: how related are $i$ and $j$.
 `PerBandSpatialCoupling` learns $A_{ij}^{(k)}$: how related are they **at band
 $k$**. The coupling carries frequency semantics, so "which driver matters at
 which timescale" is a readable object rather than a black-box attention weight
--- and section 13.4 of `RESULTS.md` already reads it, localising interconnector
+-- and section 13.4 of `attic/RESULTS-superseded.md` already reads it, localising interconnector
 ramp pressure to the daily band and solar and demand to the sub-6-hour bands.
 
 ### The framing this implies
@@ -511,8 +512,8 @@ numbers become support for it rather than the product.
 
 ## 13. Caveats
 
-- One region, two years, one target, horizon 1. The horizon matters: `RESULTS.md` section 11 records h=1 as **saturated** -- persistence scores 14.40 against a best model of ~14.3 -- so everything above is measured where there is ~0.1 MAE of room. The spatial experiment tests h=6 for exactly this reason.
+- One region, two years, one target, horizon 1. The horizon matters: `attic/RESULTS-superseded.md` section 11 records h=1 as **saturated** -- persistence scores 14.40 against a best model of ~14.3 -- so everything above is measured where there is ~0.1 MAE of room. The spatial experiment tests h=6 for exactly this reason.
 - `vmd_panel` shares hyperparameters with arms that have 8 inputs rather than 215, so its collapse shows that naive per-channel concatenation hurts, not that joint decomposition is superior to multi-channel VMD.
 - MVMD (Rehman & Aftab 2019) extends VMD to joint multi-channel decomposition. "VMD cannot use spatial information" remains **not** a defensible sentence.
 - The forward-exogenous condition in the spatial experiment uses **reanalysis at the target time**. It is an upper bound on what a real forecast could deliver, and is the right measurement for "is the information there", not for "what would this earn".
-- Claims 1 and 2 of `RESULTS.md` are untouched by any of this. They do not depend on epoch selection, on the residual channel, or on the delivery path.
+- Claims 1 and 2 of `attic/RESULTS-superseded.md` are untouched by any of this. They do not depend on epoch selection, on the residual channel, or on the delivery path.

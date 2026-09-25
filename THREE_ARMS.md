@@ -2,14 +2,14 @@
 
 *generated 2026-09-18 11:46 -- 12/12 runs complete*
 
-Settles claim 3 of `RESULTS.md` section 12, which that document records as **never run**. Every arm sits on identical rows, windows, head, optimiser and budget, so the numbers below are the first that may be compared directly.
+Settles claim 3 of `attic/RESULTS-superseded.md` section 12, which that document records as **never run**. Every arm sits on identical rows, windows, head, optimiser and budget, so the numbers below are the first that may be compared directly.
 
 ## Result
 
 Test MAE on 2019, mean over seeds, lower is better. Two selection rules, both reported:
 
 - **honest** -- weights chosen on the validation tail of the train year, test scored once from them
-- **cherry** -- the minimum over epochs of test MAE, which is the statistic `RESULTS.md` section 13.3 and `benchmark_seeds.py` report
+- **cherry** -- the minimum over epochs of test MAE, which is the statistic `attic/RESULTS-superseded.md` section 13.3 and `benchmark_seeds.py` report
 
 Neither guarantees generalisation on one test year and one region. The **gap** between them is the size of the selection effect, and is a result in its own right.
 
@@ -37,7 +37,7 @@ Neither guarantees generalisation on one test year and one region. The **gap** b
 
 ## Why this had to be run
 
-`RESULTS.md` section 12 states the problem plainly: every VMD comparison in that document used *temporal-only* NVMD on the price-only per-year CSVs, while every spatial result was NVMD-against-NVMD on the compound panel. Different data, different pipeline, different MAE scale. "Spatial beats temporal NVMD" and "temporal NVMD beats VMD" cannot be composed into "spatial NVMD beats VMD".
+`attic/RESULTS-superseded.md` section 12 states the problem plainly: every VMD comparison in that document used *temporal-only* NVMD on the price-only per-year CSVs, while every spatial result was NVMD-against-NVMD on the compound panel. Different data, different pipeline, different MAE scale. "Spatial beats temporal NVMD" and "temporal NVMD beats VMD" cannot be composed into "spatial NVMD beats VMD".
 
 `vmd_price` vs `nvmd_st` is claim 3. `vmd_panel` is the stronger test, because it hands classical VMD the same exogenous panel and so isolates *joint* decomposition from merely *having* the channels. `nvmd_temporal` is the fourth corner of the 2x2.
 

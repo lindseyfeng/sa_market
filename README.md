@@ -6,7 +6,7 @@ half-hourly RRP, train 2018 / test 2019.
 
 **Start with [`FINDINGS.md`](FINDINGS.md)** — the whole picture, including the
 leakage result the project rests on, the architecture, and every claim we have
-since had to retract. [`RESULTS.md`](RESULTS.md) is the older running log.
+since had to retract. [`attic/RESULTS-superseded.md`](attic/RESULTS-superseded.md) is the older running log.
 
 ## Layout
 
@@ -47,7 +47,7 @@ NaN pattern on resume.
 Window 96, horizon 1 unless stated. Selection on a validation tail of the train
 year with a 96-window embargo; test scored once from those weights. Results
 carry both that number and the minimum of test MAE over epochs, because the
-older tables in `RESULTS.md` report the latter. Every arm sees 100% of the
+older tables in `attic/RESULTS-superseded.md` report the latter. Every arm sees 100% of the
 signal: decompositions that do not reconstruct exactly carry a residual channel.
 
 This box has 8 GB of RAM and the desktop stays in use. Run the shell scripts
