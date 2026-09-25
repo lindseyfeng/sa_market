@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-25 12:44*
+*generated 2026-09-25 12:46*
 
 ## Summary
 
@@ -226,15 +226,24 @@ Regenerate with `python3 -m report.plot_bands`.
 
 ## 5. Claim 3: does spatio-temporal NVMD beat VMD?
 
-Yes, on both metrics, once VMD is given its residual channel and both arms are trained on the same objective. Each of those two corrections is worth more than the margin under test, which is why the protocol is stated before the number.
+Yes on RMSE, robustly. On MAE only under a tail-insensitive objective, and the two arms cross. Both answers need VMD given its residual channel first, a correction worth more than the margin under test.
+
+**Figure: `figures/loss_sweep.png`** (`analysis/plot_loss_sweep.py`) is the clearest statement of this. Sliding the objective from L1 to MSE, the spatial arm moves 0.736 MAE and the baseline 0.281 -- a 2.6x steeper slope, which is what having $2K$ head inputs against $K{+}1$ buys the objective to reallocate. **The lines cross.** Under MSE the spatial arm is 0.108 *behind*; under L1 it is 0.347 ahead. Meanwhile the RMSE gap sits at a near-constant **~1.4, about 5%**, at every objective.
+
+So the honest summary is two statements, not one:
+
+- **The RMSE advantage is a property of the representation.** It is ~5% and no choice of objective moves it.
+- **The MAE advantage is a property of the representation *and* the objective.** It exists under L1 and Huber and reverses under MSE. Reporting it without naming the loss would be reporting a choice as a result.
 
 **The answer.** Identical rows, `R=33` panel, matched Huber objective, residual returned to VMD:
 
-| arm | MAE | RMSE | seeds |
-|---|---:|---:|---:|
-| `vmd_price_res` | 14.232 | 26.564 | 2 |
-| **`nvmd_st`** | **14.038** | **25.048** | 2 |
-| | **-1.4%** | **-5.7%** | |
+| objective | `vmd_price_res` | `nvmd_st` | MAE | RMSE |
+|---|---:|---:|---:|---:|
+| L1 | 14.091 / 26.553 | **13.744 / 25.077** | **-2.5%** | **-5.6%** |
+| Huber $\beta$=1 | 14.232 / 26.564 | **14.038 / 25.048** | **-1.4%** | **-5.7%** |
+| MSE | **14.372** / 26.427 | 14.480 / **25.121** | +0.8% | **-4.9%** |
+
+The L1 row is the best matched pair and is single-seed on the spatial arm, so the Huber row is the one to quote. The MSE row is in the table because a result that reverses under a defensible objective should not be hidden.
 
 **VMD must be given its residual.** VMD does not reconstruct its input exactly; the residual is **8.5-9.5% of the price standard deviation**. Scoring it on $K$ modes alone hands it ~91% of the signal while a partition-of-unity filter bank gets 100%, and costs it **0.237 MAE** (14.561 against 14.324 on seed 1). Every arm in this document carries a residual channel. Anyone reproducing a VMD baseline should check this first.
 
