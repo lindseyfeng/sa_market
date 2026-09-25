@@ -1,12 +1,27 @@
-# NVMD results snapshot
+# NVMD: what is established
 
-Data: AEMO SA1 half-hourly RRP, filtered to `RRP in [1, 981.65]` (reproduces the
-literature split: 63,538 train rows vs their 63,540).
-Unless stated, experiments below use **train 2018 / test 2019**, W=96 windows.
+South Australia half-hourly price (AUD/MWh, AEMO NEM), train 2018 / test 2019.
+Organised by claim, not by when it was run.
+
+## Status
+
+| claim | status | where |
+|---|---|---|
+| The literature's VMD gains are **leakage**, not decomposition | **Strong.** 6.6x per-mode extrapolation error from the window alone; a 625-param linear beats a 5.7M CNN-BiLSTM | §1 |
+| NVMD is a **better decomposition** than tuned VMD | **Strong.** 6.11 vs 1.63 participation ratio, 307 h vs 20 h coverage, 600x-180,000x cheaper | §2 |
+| ...and a **more accurate** one | **Yes but small.** 3.6% on ridge against a fully tuned baseline | §2.3 |
+| Decomposition quality is **not what limits** short-horizon accuracy | **Shown four ways.** Loss flat in the basis; margin decays with predictor strength and with horizon | §3 |
+| Joint learned decomposition beats handing VMD the same channels | **Shown.** `vmd_panel` +24.2% MAE | §4.7 |
+| **Spatio-temporal NVMD beats VMD on both metrics** | **Shown, under Huber.** -3.3% MAE, -5.0% RMSE, 2 seeds | §4.9 |
+| ...under MSE | **False.** Wins RMSE, loses MAE -- the objective was the confound | §4.8 |
+| NVMD beats other decomposition families | _pending_ | §4.11 |
+| The >=10% bar this project set | **Not met.** Best is 5% | -- |
+| "We make VMD learnable" is novel | **No.** Unrolled VMD was published Sept 2025 | §5.2 |
+| "VMD papers leak" is novel | **No**, VMDNet named it (EUSIPCO 2026). The *quantification* is ours | §5.1 |
 
 ---
 
-## 1. Leakage in the existing benchmark family  *(strongest result)*
+## 1. The leakage finding  *(the strongest result)*
 
 Per-mode linear AR(48) probe (`ar_probe.py`). If modes are extrapolable to far
 below the series' own variability, they encode future information.
@@ -30,31 +45,9 @@ traced it to this effect (it degrades to ~10.7 once decomposition is segmented).
 
 ---
 
-## 2. Forecast accuracy vs a leak-free, context-matched baseline
+## 2. NVMD is the better decomposition
 
-`benchmark_seeds.py`, 5 seeds, paired vs causal VMD W=96. `*` = exceeds 2 SE.
-
-| method | Linear | MLP | LSTM |
-|---|---|---|---|
-| Causal VMD | 15.97 +/- 0.11 | 15.89 +/- 0.04 | 14.43 +/- 0.07 |
-| NVMD v2 | 15.27 +/- 0.05 | 15.99 +/- 0.18 | 14.42 +/- 0.04 |
-| **NVMD v3** | **15.17 +/- 0.09** | **15.37 +/- 0.08** | **14.28 +/- 0.06** |
-
-Paired difference vs causal VMD (negative = better):
-
-| method | Linear | MLP | LSTM |
-|---|---|---|---|
-| NVMD v2 | -0.70+/-0.09* | +0.10+/-0.14 | -0.01+/-0.05 |
-| **NVMD v3** | **-0.79+/-0.16*** | **-0.52+/-0.08*** | **-0.15+/-0.08*** |
-
-NVMD v3 wins on all three, all significant: **4.9% / 3.3% / 1.0%**.
-On a ridge linear model the gap is 6.2% (14.703 vs 15.674).
-
-**The margin shrinks as the predictor strengthens.** See section 5.
-
----
-
-## 3. Interpretability  *(largest measured advantage after leakage)*
+### 2.1 Structure and coverage
 
 `interpret_modes.py`, test year.  **Figure: `interpretability_nvmd_vs_vmd.png`**
 (`plot_interpretability.py`), four panels -- band structure, energy
@@ -100,9 +93,79 @@ signal -- 77% of the energy in one component. The defensible claim is that NVMD
 wins on **structure and coverage**, not on ablation. Panel D is in the figure
 deliberately: a reviewer will run this test, and it is better to have reported it.
 
----
+### 2.2 Accuracy against a leak-free, context-matched baseline
 
-## 4. Runtime
+`benchmark_seeds.py`, 5 seeds, paired vs causal VMD W=96. `*` = exceeds 2 SE.
+
+| method | Linear | MLP | LSTM |
+|---|---|---|---|
+| Causal VMD | 15.97 +/- 0.11 | 15.89 +/- 0.04 | 14.43 +/- 0.07 |
+| NVMD v2 | 15.27 +/- 0.05 | 15.99 +/- 0.18 | 14.42 +/- 0.04 |
+| **NVMD v3** | **15.17 +/- 0.09** | **15.37 +/- 0.08** | **14.28 +/- 0.06** |
+
+Paired difference vs causal VMD (negative = better):
+
+| method | Linear | MLP | LSTM |
+|---|---|---|---|
+| NVMD v2 | -0.70+/-0.09* | +0.10+/-0.14 | -0.01+/-0.05 |
+| **NVMD v3** | **-0.79+/-0.16*** | **-0.52+/-0.08*** | **-0.15+/-0.08*** |
+
+NVMD v3 wins on all three, all significant: **4.9% / 3.3% / 1.0%**.
+On a ridge linear model the gap is 6.2% (14.703 vs 15.674).
+
+**The margin shrinks as the predictor strengthens.** See §3.
+
+### 2.3 Baseline fairness: an 18-config VMD sweep
+
+Answers the fairness objection. 18 configs, `alpha` x `K` at the matched window W=96,
+both years, generated from the same source CSVs as the v3static modes so row
+counts stay aligned (17099 / 16529) and the pairing stays valid.
+
+Screened with `ridge_screen.py` -- closed-form ridge, ~110 s per config, feature
+construction mirroring `ModeWindowDataset` exactly. The full multi-seed benchmark
+costs ~10.7 h per method pair, which makes an 18-point grid (~80 h) infeasible.
+The screen reproduces the known ridge result to within 1 point (15.727 / 14.917
+here vs 15.674 / 14.703 in §2.2), erring *against* NVMD, and it targets the
+Linear cell -- where NVMD's margin is largest, i.e. the most VMD-favourable test.
+
+| config | test MAE | vs NVMD v3static |
+|---|---|---|
+| **NVMD v3static (K=8)** | **14.917** | -- |
+| VMD a1000 k8  *(best by test)* | 15.470 | -3.6% |
+| VMD a250 k8  *(best by train-val)* | 15.478 | -3.6% |
+| VMD a2000 k12  *(the untuned baseline used above)* | 15.727 | -5.2% |
+| VMD a250 k16  *(worst)* | 16.396 | -9.0% |
+
+**Tuning the baseline recovers 0.25 of the 0.81 gap (31%). The remaining 3.6% is
+real**, in the cell where the fairness objection was strongest.
+
+The result does not depend on how the baseline is tuned: selecting VMD's config
+honestly (train-val tail of 2018) gives 15.478, selecting it on the test year
+gives 15.470 -- a 0.008 difference. Ridge lambda is likewise chosen on a held-out
+tail of the train year, never on test.
+
+**Two findings that strengthen §3:**
+
+1. **Alpha barely matters.** Across `alpha` in [250, 8000] at K=8 the spread is
+   15.470-15.607 -- **0.9%**, the same flatness measured for NVMD in §3.
+   The insensitivity of the loss to decomposition parameters is not an NVMD
+   quirk; it holds for classical VMD, now over 18 points rather than 5.
+2. **VMD's optimum is K=8 -- the same K as NVMD.** Every K=8 config beats every
+   K=12 config, which beats most K=16. The K=12 inherited from the literature was
+   simply wrong, as §2.1 predicted ("effectively 1.75 modes").
+
+**Cost asymmetry (updates §2.4).** Per year, VMD ranged **59 s to 18,178 s**
+depending on (alpha, K) -- K=16 is pathological, up to 5 h for one year. NVMD is
+0.1 s. The advantage is **600x to 180,000x**, not a single 1000x. The whole sweep
+cost 22.5 h; the NVMD equivalent is minutes. *This is what the speed claim is
+actually for: tuning is affordable for one method and not the other.*
+
+**Still owed:** sections 2 and 8 tabulate against `a2000 k12`. The fairness
+objection does not vanish, it moves to those tables -- they need regenerating
+against `a250 k8`, which would cut the headline Linear margin from ~4.9% to
+~3.6% and may take the LSTM cell to parity.
+
+### 2.4 Runtime
 
 | | mode generation, 1 year (~17k windows) |
 |---|---|
@@ -114,7 +177,7 @@ This is what makes multi-scale decomposition feasible for NVMD and not for VMD.
 
 ---
 
-## 5. Why the accuracy margin is small  *(a finding, not a failure)*
+## 3. Decomposition quality is not the bottleneck
 
 Both decompositions are **invertible transforms** -- modes sum exactly to the
 input. So neither adds information; they can only help via conditioning. The
@@ -147,49 +210,12 @@ the literature -- the large reported gains were leakage, not decomposition.
 **Implication:** to exceed this ceiling you need *new information*, not a better
 basis. Hence spatial (cross-regional) extension.
 
----
+### 3.1 The win does not depend on configuration
 
-## 6. Negative results worth recording
-
-- K=12 and K=16 do not beat K=8 (14.29 / 14.22 vs 14.16).
-- Input-adaptive masks (`adapt=0.5`) do not beat a static bank (14.29 vs 14.16).
-- Longer window alone does not help (L=192: 14.26 vs L=96: 14.16).
-- Aggressive band LR (3e-2) wrecks the bank and hurts accuracy (14.23).
-  Band-parameter gradients have sign consistency 1.000 and are ~8x the LSTM's,
-  so movement is step-budget limited -- but the optimum is near the geometric prior.
-- Edge-padding the FFT window (the circular-boundary hypothesis) changes nothing
-  (<0.5% on Linear/MLP/LSTM). Boundary energy ratio measured at 1.002.
-
----
-
-## 7. Caveats to carry into any writeup
-
-- ~~Causal VMD is untuned (`alpha=2000, K=12`). A fair paper must sweep it.~~
-  **RESOLVED, section 10.** Swept 18 configs; the win survives at a reduced margin.
-- CNN-BiLSTM is not yet in the multi-seed table; it is the cell where v2 lost
-  and the closest analogue to the published baseline. **5-seed run in progress.**
-  Note `CNNBiLSTMPredictor` hardcodes `lstm_layers=2` while `MRC_BiLSTM` defaults
-  to 3, so it is not literally the published architecture.
-- **`benchmark.train_and_eval` uses the TEST file as its validation loader**
-  (`benchmark.py:186`) -- early stopping and model selection both run on the test
-  year. It is a paired comparison so the bias partly cancels, but every "val MAE"
-  in this document is best-epoch-on-test, and the section 6 config choices
-  (K=8 over K=12/16, static over adapt) were therefore made on the test year.
-  Decide how to handle this before any writeup; it is more serious than the
-  untuned-baseline issue was.
-- Univariate VMD is the only baseline compared. **MVMD** (Rehman & Aftab 2019)
-  and per-channel-VMD-then-concatenate both exist, so "VMD cannot use spatial
-  information" is not a defensible sentence -- compare or scope out explicitly.
-- The `RRP in [1, 981.65]` filter drops 2,040 rows, creating time gaps up to
-  34.5 h that rolling windows silently span. Inherited from the literature.
-- 2022 test year is a severe distribution shift (mean 176 vs 50-93 in training
-  years); results on the long split should be read in that light.
-- NVMD modes are optimised jointly with an LSTM head, which biases
-  cross-predictor comparison. A linear-head variant is implemented but untested.
-
----
-
-## 8. Robustness of the NVMD > VMD result (5-seed, paired vs causal VMD)
+> **Read under the defect in §5.** These runs early-stop on the test year,
+> so "significant" means significant under test-selected checkpoints. This is
+> the only multi-seed evidence in the document and it has not been re-run under
+> §4's protocol.
 
 All five v3 configurations beat causal VMD on all three predictors, every cell
 significant. The win is not configuration-dependent.
@@ -206,83 +232,10 @@ No config escapes the ceiling (best Linear 5.3%, best LSTM 1.6%).
 `linhead` (predictor-agnostic training) is best-or-tied on LSTM, so removing the
 joint-training bias helps transfer slightly.
 
-## 9. Multi-scale decomposition: negative result
-
-Concatenating L=96/192/384 decompositions (24 modes vs 8).
-
-| method | Linear | MLP | LSTM |
-|---|---|---|---|
-| v3 L96 | -0.79+/-0.16* | -0.52+/-0.08* | -0.15+/-0.08* |
-| v3 L384 | -0.72+/-0.28* | -0.30+/-0.08* | +0.12+/-0.08* |
-| v3 multiscale | **-0.91+/-0.19*** | -0.35+/-0.12* | +0.05+/-0.06 |
-
-Helps the weakest predictor (best single margin observed, 5.7%), degrades the
-stronger ones -- LSTM drops from a significant win to parity. The extra scales
-re-encode the same window rather than adding information, so they are redundant
-channels that dilute a strong predictor. Third independent confirmation of the
-ceiling in section 5.
-
-Longer window alone is monotonically worse: L=96 14.16, L=192 14.26, L=384 14.32.
-
-
----
-
-## 10. Baseline fairness: causal VMD hyperparameter sweep
-
-Answers section 7 item 1. 18 configs, `alpha` x `K` at the matched window W=96,
-both years, generated from the same source CSVs as the v3static modes so row
-counts stay aligned (17099 / 16529) and the pairing stays valid.
-
-Screened with `ridge_screen.py` -- closed-form ridge, ~110 s per config, feature
-construction mirroring `ModeWindowDataset` exactly. The full multi-seed benchmark
-costs ~10.7 h per method pair, which makes an 18-point grid (~80 h) infeasible.
-The screen reproduces the known ridge result to within 1 point (15.727 / 14.917
-here vs 15.674 / 14.703 in section 2), erring *against* NVMD, and it targets the
-Linear cell -- where NVMD's margin is largest, i.e. the most VMD-favourable test.
-
-| config | test MAE | vs NVMD v3static |
-|---|---|---|
-| **NVMD v3static (K=8)** | **14.917** | -- |
-| VMD a1000 k8  *(best by test)* | 15.470 | -3.6% |
-| VMD a250 k8  *(best by train-val)* | 15.478 | -3.6% |
-| VMD a2000 k12  *(the untuned baseline used above)* | 15.727 | -5.2% |
-| VMD a250 k16  *(worst)* | 16.396 | -9.0% |
-
-**Tuning the baseline recovers 0.25 of the 0.81 gap (31%). The remaining 3.6% is
-real**, in the cell where the fairness objection was strongest.
-
-The result does not depend on how the baseline is tuned: selecting VMD's config
-honestly (train-val tail of 2018) gives 15.478, selecting it on the test year
-gives 15.470 -- a 0.008 difference. Ridge lambda is likewise chosen on a held-out
-tail of the train year, never on test.
-
-**Two findings that strengthen section 5:**
-
-1. **Alpha barely matters.** Across `alpha` in [250, 8000] at K=8 the spread is
-   15.470-15.607 -- **0.9%**, the same flatness measured for NVMD in section 5.
-   The insensitivity of the loss to decomposition parameters is not an NVMD
-   quirk; it holds for classical VMD, now over 18 points rather than 5.
-2. **VMD's optimum is K=8 -- the same K as NVMD.** Every K=8 config beats every
-   K=12 config, which beats most K=16. The K=12 inherited from the literature was
-   simply wrong, as section 3 predicted ("effectively 1.75 modes").
-
-**Cost asymmetry (updates section 4).** Per year, VMD ranged **59 s to 18,178 s**
-depending on (alpha, K) -- K=16 is pathological, up to 5 h for one year. NVMD is
-0.1 s. The advantage is **600x to 180,000x**, not a single 1000x. The whole sweep
-cost 22.5 h; the NVMD equivalent is minutes. *This is what the speed claim is
-actually for: tuning is affordable for one method and not the other.*
-
-**Still owed:** sections 2 and 8 tabulate against `a2000 k12`. The fairness
-objection does not vanish, it moves to those tables -- they need regenerating
-against `a250 k8`, which would cut the headline Linear margin from ~4.9% to
-~3.6% and may take the LSTM cell to parity.
-
----
-
-## 11. Horizon sweep: h = 6, 12, 24, 48
+### 3.2 ...nor survive a longer horizon
 
 Two separate experiments, on different data. **They do not compose** -- see
-section 12.
+§4.
 
 **(a) Spatial coupling on vs off, within NVMD** (`train_nvmd_st.py`, compound
 panel, min test MAE over 2 seeds):
@@ -311,68 +264,17 @@ two rows are indistinguishable from zero, not "small but real".
 
 The Linear win is flat and significant at every horizon (~3%). The LSTM win
 exists only at short horizons and is dead by h=24. MLP is a genuine *loss* at
-h=48. Section 5's ceiling shrinks with predictor strength *and* with horizon --
-a fifth independent confirmation, after sections 5, 8, 9 and 10.
+h=48. §3's ceiling shrinks with predictor strength *and* with horizon --
+a fifth independent confirmation, after §3.
 
 ---
 
-## 12. Claims status
+## 4. The spatio-temporal extension
 
-| # | claim | evidence | status |
-|---|---|---|---|
-| 1 | Per-year/global VMD leaks; the literature's gains are leakage, not decomposition | Section 1: 6.6x per-mode AR extrapolation error from the window alone; 625-param linear (4.29) beats 5.7M CNN-BiLSTM (13.42); original 7.11 reproduced and traced | **Strong.** The headline |
-| 2 | NVMD gives an equal-or-better decomposition at orders-of-magnitude lower cost | Sections 4 and 10: 0.1 s vs 59-18,178 s per year; 600x-180,000x | **Strong**, and previously understated |
-| 3 | Spatio-temporal NVMD beats VMD | -- | **Not supported as stated. The comparison has never been run** |
+The ceiling in §3 says a better basis will not buy more accuracy. Exceeding it
+needs *new information*, which is what the spatial panel is for.
 
-**On claim 3.** Every VMD comparison in this document uses *temporal-only* NVMD
-on the price-only per-year CSVs. Every spatial result is NVMD-vs-NVMD on
-`compound_2018_2022.csv` -- different data, different pipeline, different MAE
-scale (23-28 vs 25-29). "Spatial beats temporal NVMD" and "temporal NVMD beats
-VMD" cannot be composed into "spatial NVMD beats VMD".
-
-VMD being univariate does not rescue this. It makes the *setup* fair -- VMD gets
-everything VMD can take -- but fairness is not measurement. The missing run is
-three arms on identical rows and protocol:
-
-| arm | information | decomposition |
-|---|---|---|
-| causal VMD, price only | temporal | univariate VMD |
-| causal VMD per channel, concatenated | spatial | univariate VMD x ~26 |
-| NVMD ST (concat) | spatial | joint |
-
-Arm 1 vs 3 is the claim. Arm 2 is what stops a reviewer objecting that VMD was
-never given the extra channels -- and beating arm 2 is the stronger result,
-because it isolates *joint* decomposition from merely *having* the data.
-Cost at the tuned K=8/alpha=1000: ~115 s/year/channel, ~1.7 h for both years
-across the 26 non-calendar channels of the 33-channel panel.
-
-**Defensible restatement:**
-
-1. Per-year VMD leaks; we quantify it with a per-mode AR probe and a
-   capacity-irrelevance test, and we reproduce and explain the published 7.11.
-2. NVMD matches or beats VMD's decomposition at 10^2-10^5x lower cost, which is
-   what makes tuning and multi-scale feasible at all.
-3. Once leakage is removed, NVMD beats a **fully tuned** VMD by 3.6% on linear
-   predictors, shrinking toward parity as predictor and horizon grow --
-   decomposition quality is not what limits accuracy (section 5). Spatial
-   exogenous information helps at short horizons only, and its gain is an
-   **upper bound**: the weather is reanalysis, not forecast. That caveat is
-   load-bearing here, because claim 1 is itself about leakage.
-
-
----
-
-## 13. The spatio-temporal extension: NVMD as a richer representation
-
-This is the one axis on which NVMD is not bounded by the section 5 ceiling.
-Sections 5, 8 and 9 all say the same thing -- both decompositions are invertible
-transforms, so neither *adds* information and the achievable gain is bounded by
-conditioning alone. Section 5's own conclusion was: **"to exceed this ceiling you
-need new information, not a better basis."** The exogenous panel is that new
-information, and NVMD can ingest it because it is a learned filter bank with a
-head, not a per-window optimisation over a single series.
-
-### 13.1 What the representation admits
+### 4.2 What the representation admits
 
 Classical VMD, as used throughout the price-forecasting literature we audit, is
 **univariate**: the objective decomposes one series into K narrow-band modes and
@@ -386,7 +288,7 @@ spatial information" is therefore **not** a defensible sentence. The defensible
 one is: *univariate VMD as used in this literature cannot, and we compare against
 MVMD / per-channel VMD or scope them out explicitly.*
 
-### 13.2 The panel, and the design rule that made it work
+### 4.3 The panel, and the design rule that made it work
 
 `build_compound_panel.py` -> `compound_2018_2022.csv`, 77,397 rows x 33 channels:
 6 demand, 4 interconnector spreads, 3 dispatch-pressure, 12 weather
@@ -398,7 +300,15 @@ levels are near-duplicates of the target and carry nothing. The first price-only
 spatial attempt produced no gain at all for exactly this reason.
 `spread_SA1_TAS1` is the single strongest channel (+0.513).
 
-### 13.3 The architectural fix: concatenate, do not replace
+### 4.4 The architectural fix: concatenate, do not replace
+
+> **Numbers superseded by §4.** The mechanism below -- replace breaks
+> the partition of unity -- still holds and is still the reason `--concat`
+> exists. The claim that concat *fixed* the MAE regression does not: these runs
+> early-stopped on **test**, and under §4's val-selected protocol the
+> spatial arm still loses MAE when trained on MSE. The actual cause was the
+> objective, not the architecture. Read 13.3 for the mechanism, 14 for the
+> result.
 
 `SpatioTemporalNVMD.forward` originally returned the target's modes *after*
 per-band mixing -- the mixed modes **replaced** the target's own. That destroys
@@ -424,7 +334,7 @@ Test MAE, 2 seeds, all at the matched 30-epoch / patience-10 budget:
 
 Two seeds only. Read the ~0.15 MAE gap as suggestive, not established.
 
-### 13.4 The interpretability payoff -- what VMD cannot say at all
+### 4.5 The interpretability payoff -- what VMD cannot say at all
 
 The coupling weights are per band, so the trained model reports **which exogenous
 driver acts at which timescale**. From `concat_run.log`:
@@ -440,25 +350,14 @@ driver acts at which timescale**. From `concat_run.log`:
 Interconnector ramp pressure dominates the daily band; solar and demand enter at
 the sub-6-hour bands. **This is a statement no univariate decomposition can make**
 -- not merely "we can use exogenous data" but "this driver acts on this
-timescale." It is a stronger interpretability claim than section 3's, and it is
+timescale." It is a stronger interpretability claim than §2.1's, and it is
 structural rather than a margin that can shrink to noise.
 
 *Caveat that cuts against it:* the exogenous block takes 60-95% of the head's
 input variance while buying ~1% MAE. A block that dominates the input and moves
 the metric that little is behaving as redundant conditioning, not new
-information -- consistent with section 5, and it should be said rather than
+information -- consistent with §3, and it should be said rather than
 buried.
-
-### 13.5 What is proven, and what is not
-
-| statement | status |
-|---|---|
-| NVMD's representation admits exogenous channels; univariate VMD's does not | **Architectural, true** (with the MVMD caveat, 13.1) |
-| The panel must use spreads, not neighbour levels | **Shown** |
-| Concat beats replace; replace breaks the partition of unity | **Shown**, with the mechanism |
-| Per-band coupling localises drivers to timescales | **Shown**, and unique to this representation |
-| Spatial coupling improves accuracy at short horizons | **Suggestive**: -2.21 MAE at h=6, decaying to -0.01 by h=48 (section 11a), 2 seeds |
-| **Spatio-temporal NVMD beats VMD** | **Not run** -- see section 12 for the three-arm design that would settle it |
 
 **The load-bearing caveat.** The weather channels are **reanalysis, not forecast**.
 Deployment would use forecast wind and temperature, which carry error reanalysis
@@ -470,15 +369,15 @@ will be held to precisely that standard.
 
 ---
 
-## 14. The three-arm run, and the loss-function finding  *(2026-09-25)*
 
-Settles claim 3, which section 12 recorded as **never run**. Four arms on
+
+Settles claim 3, which §4 recorded as **never run**. Four arms on
 identical rows, identical protocol: validation tail of 2018 with a 96-window
 embargo, checkpoint selected on val MAE, test scored once from those weights,
 window ends >= row 190. VMD at K=8 alpha=1000, the best-by-test config of
-section 10, i.e. most favourable to the baseline.
+§2.3, i.e. most favourable to the baseline.
 
-### 14.1 Four arms, MSE-trained (2 seeds)
+### 4.7 Four arms, MSE-trained (2 seeds)
 
 | arm | features | test MAE | test RMSE | vs `vmd_price` |
 |---|---|---|---|---|
@@ -496,12 +395,12 @@ what converts them into signal.
 
 **But the spatial arm loses on MAE.** `nvmd_st` is +2.2% worse than
 `nvmd_temporal` on MAE while -3.1% better on RMSE. That is the same
-MAE-worse/RMSE-better signature section 13.3 attributed to the partition-of-unity
+MAE-worse/RMSE-better signature §2.4.4 attributed to the partition-of-unity
 break and claimed `--concat` had fixed. Under this protocol the fix does not
-hold: section 13.3 early-stopped on **test**, and cherry-picking the best test
+hold: §2.4.4 early-stopped on **test**, and cherry-picking the best test
 epoch here still leaves `nvmd_st` 1.2% behind on MAE.
 
-### 14.2 The cause: the objective disagreed with the metric
+### 4.8 The cause: the objective disagreed with the metric
 
 The training loss was `F.mse_loss` while selection and reporting used MAE.
 MSE is RMSE squared, so it spends any spare capacity where its gradient is
@@ -524,7 +423,7 @@ Sweeping the objective on `nvmd_st`, seed 1:
 Monotone in beta. Every step toward MSE costs MAE, and the total spread —
 **0.74 MAE, 5.1%** — is larger than the NVMD-vs-VMD margin being claimed.
 
-### 14.3 With the objective fixed (Huber beta=1.0, 2 seeds)
+### 4.9 With the objective fixed (Huber beta=1.0, 2 seeds)
 
 | arm | MSE-trained MAE / RMSE | Huber-trained MAE / RMSE |
 |---|---|---|
@@ -548,7 +447,7 @@ what it has. A richer representation needs a loss that is not tail-dominated
 before its bulk-interval gain is visible. That is a statement about when the
 method helps, and it belongs in the writeup rather than being quietly tuned away.
 
-### 14.4 Loss sweep, both seeds
+### 4.10 Loss sweep, both seeds
 
 | loss | test MAE | test RMSE | seeds |
 |---|---|---|---|
@@ -559,10 +458,10 @@ method helps, and it belongs in the writeup rather than being quietly tuned away
 | Huber beta=4.0 | _pending_ | _pending_ | 2 |
 | MSE | 14.480 | 25.121 | 2 |
 
-### 14.5 Against other decompositions  *(same protocol, same loss)*
+### 4.11 Against other decompositions  *(same protocol, same loss)*
 
 Every arm below is trained with the **same objective as the winning NVMD arm**,
-for the reason 14.2 establishes: the objective alone is worth more than the
+for the reason 4.8 establishes: the objective alone is worth more than the
 margin under test, so a baseline trained on a different loss cannot be compared.
 Seed 1 first for the trend; seed 2 to follow if the ordering is stable.
 
@@ -575,17 +474,111 @@ Seed 1 first for the trend; seed 2 to follow if the ordering is stable.
 | `vmd_price` — classical VMD | adaptive | _pending_ | _pending_ |
 | `nvmd_st` — neural VMD + coupling | learned | _pending_ | _pending_ |
 
-### 14.6 Claim status after this run
+---
 
-| statement | status |
+## 5. Where this sits in the literature  *(searched 2026-09-25)*
+
+### 5.1 On the leakage claim (§1)
+
+**[VMDNet](https://arxiv.org/abs/2509.15394)** -- Feng, Tao, Cartlidge, Zheng,
+**EUSIPCO 2026**. States that "existing studies often suffer from information
+leakage" and fixes it with sample-wise VMD plus frequency-aware embeddings and
+parallel TCN decoding, on three electricity *demand* datasets.
+
+*What this means for §1.* The leakage claim is no longer novel -- it is now a
+named contribution at a signal-processing venue, and the causal-window protocol
+this project uses is the same idea. **But VMDNet asserts leakage without
+quantifying it.** §1 does: a 6.6x rise in per-mode AR extrapolation error from
+the window alone, and a 625-parameter linear model beating a 5.7M-parameter
+CNN-BiLSTM on the leaked modes. That measurement, and the capacity-irrelevance
+test behind it, is still unclaimed.
+
+### 5.2 On the learnable-decomposition claim (§2)
+
+**[Adaptive Deep-Unfolded VMD](https://arxiv.org/html/2509.00703)** (UVMD/MAGN),
+Sept 2025. Unrolls VMD's ADMM iterations into a differentiable module with
+mode-specific learnable bandwidths -- the same construction as NVMD. Reports
+85-95% error reduction and a 250x speedup over VMGCN on the LargeST traffic
+benchmark, 6,902 sensors.
+
+*What this means for §2.* Learnable/unrolled VMD is occupied. Two things are
+not: their decomposition is applied **per-series independently**, with spatial
+structure handled downstream by a graph network, whereas §4 couples *inside* the
+decomposition; and they evaluate on traffic, not price. The 85-95% figure should
+be read with care -- an error reduction of that size against a decomposition
+baseline is the signature of a leaking comparator, which is exactly what §1 is
+about.
+
+### 5.3 On the spatio-temporal claim (§4)
+
+No paper found applies a **jointly learned** spatio-temporal decomposition to
+electricity price. The nearest neighbours are the per-series unrolled VMD above,
+and the classical VMD+LSTM/GRU/TCN hybrid family, which decomposes one series and
+adds exogenous channels afterwards.
+
+*This is the open niche, and §4.7 suggests why it stayed open:* handing classical
+VMD the same 26 channels makes it 24.2% worse, so the obvious version of the idea
+does not work, and the version that does needs both the concat fix (§4.4) and an
+objective that is not tail-dominated (§4.8).
+
+### 5.4 What to claim, given the above
+
+| claim | defensible? |
 |---|---|
-| Joint learned decomposition beats handing classical VMD the same channels | **Shown**, `vmd_panel` +24.2% MAE |
-| Spatio-temporal NVMD beats classical VMD on both metrics | **Shown under Huber**, -3.3% MAE / -5.0% RMSE, 2 seeds |
-| ...under MSE | **False** — wins RMSE, loses MAE |
-| NVMD beats other decomposition families | _pending_ 14.5 |
-| The >=10% bar the project set | **Not met** — best is 5% |
+| "VMD forecasting papers leak" | Yes, but say VMDNet named it first and that §1 is the *quantification* |
+| "We make VMD learnable" | **No longer.** Unrolled VMD exists; scope the claim to the joint spatio-temporal construction |
+| "Joint spatio-temporal decomposition on price" | Yes -- nothing found does this |
+| "Fastest decomposition" | Yes on the numbers, but UVMD also reports a 250x speedup; compare like for like before claiming it |
 
-### 14.7 Reproduce
+---
+
+## 6. Defects and caveats
+
+**Test used as validation, §1-§3.** `analysis/benchmark.py:186` passes the test
+file as the validation loader, so early stopping and model selection both ran on
+the test year. It is a paired comparison, so the bias partly cancels between
+arms, but every "val MAE" in §1-§3 is best-epoch-on-test. §4's three-arm run
+does **not** inherit this: it selects on a validation tail of 2018 with a
+96-window embargo and scores test once.
+
+**The weather is reanalysis, not forecast.** Deployment would use forecast wind
+and temperature, which carry error reanalysis does not, so every spatial gain in
+§4 is an **upper bound**. Additionally `merge_asof(direction="nearest", +/-60min)`
+lets a :30 settlement take a :00 reading up to 30 minutes ahead. Neither is
+fatal, but both must be stated: §1 is an accusation of leakage, so this project's
+own panel will be held to exactly that standard.
+
+**Univariate VMD is the only classical baseline.** MVMD (Rehman & Aftab 2019)
+and per-channel-VMD-then-concatenate both exist. §4.7 covers the second;
+MVMD is not compared, so "VMD cannot use spatial information" is not a
+defensible sentence -- scope it explicitly.
+
+**Still owed.** §2.2 and §3.1 tabulate against `a2000 k12`, the untuned config.
+Regenerating them against `a250 k8` would cut the headline Linear margin from
+~4.9% to ~3.6% and may take the LSTM cell to parity.
+
+**Other inherited issues.** The `RRP in [1, 981.65]` filter drops 2,040 rows,
+creating time gaps up to 34.5 h that rolling windows silently span. NVMD modes
+are optimised jointly with an LSTM head, which biases cross-predictor comparison;
+a linear-head variant is implemented but untested.
+
+---
+
+## 7. Where the numbers live
+
+| file | backs | protocol |
+|---|---|---|
+| `results/three_arms_results.json` | §4.7 four arms, MSE | val-selected, 2 seeds |
+| `results/huber_nvmd_{st,temporal}_s{1,2}.json` | §4.9 objective fixed | val-selected, 2 seeds |
+| `results/beta_{l10,huber0p5,huber2p0,huber4p0}.json` | §4.8 / §4.10 loss sweep | val-selected |
+| `results/zoo_{wpt,bank,ewt,emd}_l1.json` | §4.11 other decompositions | _queued_ |
+| `results/stability_results.json` | §3.1, 24 rows | 5 seeds |
+| `results/basis_stability.json` | §3.1 drift/churn | -- |
+| `results/spatial_2x2_results.json` | §4.4 the 2x2 | test-early-stopped, **superseded** |
+| `results/dose_results.json` | §4.5 exogenous dose | -- |
+| `attic/superseded/` | seed-1 intermediates of §4.7 | replaced |
+
+### Reproduce
 
 ```
 PYTHONPATH=. python3 experiments/run_three_arms.py \
@@ -595,4 +588,4 @@ PYTHONPATH=. python3 experiments/run_three_arms.py \
 
 On this box run the arms as separate 2-thread processes rather than one
 6-thread process: four in parallel finish a 30-epoch schedule in ~45 min
-against ~70 min sequential, because the CPU thread scaling is sublinear.
+against ~70 min sequential, because CPU thread scaling is sublinear.
