@@ -39,33 +39,30 @@ A = L.append
 A("# Decomposition for electricity price forecasting: the whole picture\n")
 A(f"*generated {datetime.now():%Y-%m-%d %H:%M}*\n")
 
-A("## Summary\n")
-A("| # | claim | evidence | status |")
-A("|---|---|---|---|")
-A("| 1 | The published gains from VMD-based price forecasting are **leakage**, "
-  "not decomposition | per-mode AR(48) probe, capacity-irrelevance test, and a "
-  "reproduction of the original 7.11 MAE | **Strong. This is the headline** |")
-A("| 2 | A band decomposition can be had at 10^3-10^5x lower cost | 0.1 s/year "
-  "against 59-18,178 s/year | **Strong** |")
 _ip = [r["test_mae"] for r in STAB if PATH.get(r["arm"]) == "internal"]
 _pp = [r["test_mae"] for r in STAB if PATH.get(r["arm"]) == "precomputed"]
 _rng = (f"internal {min(_ip):.3f}-{max(_ip):.3f} vs precomputed "
         f"{min(_pp):.3f}-{max(_pp):.3f}, "
         f"{'no overlap' if max(_ip) < min(_pp) else 'OVERLAPPING'}"
         if _ip and _pp else "pending")
-A(f"| 3 | Putting the decomposition **inside** the forecaster beats the "
-  f"classical decompose-then-forecast pipeline | {_rng}, same filter bank | "
-  f"**Supported**, 2 seeds |")
-A("| 4 | Classical modes underperform because of **what the bands physically "
-  "are**, not because of which algorithm produced them | VMD\'s lowest band is "
-  "2.5x wider than its own centre, so it smears across DC; the decomposition "
-  "is effectively 1.6 modes; its slowest resolvable band is the daily cycle "
-  "itself, so everything slower falls into that smear. Vary "
-  "the algorithm instead and nothing moves: five families within 0.3%, learned "
-  "and hard-coded banks within 0.002, churn spanning 26x with no effect | "
-  "**Supported** |")
-A("| 5 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does "
-  "not | **Fails as stated.** The line is still open, section 9 |")
+
+A("## Summary\n")
+A("Train 2018 / test 2019, SA1 half-hourly price. Two results hold independently "
+  "of every protocol question raised below.\n")
+A("- **The published gains from VMD price forecasting are leakage, not "
+  "decomposition**, and what leaks is a linearly readable aggregate rather than "
+  "a forecasting signal. Section 1.")
+A("- **A band decomposition costs 10^3-10^5x less**, 0.1 s/year against "
+  "59-18,178 s/year. Section 2.\n")
+A("Every other result here is a margin against a baseline, and each is smaller "
+  "than at least one protocol choice this project initially got wrong: the "
+  "residual channel (0.237 MAE), the training objective (0.442 on the widest "
+  "arm), epoch selection (up to 0.170), the seed itself (0.116). Read the "
+  "section that measures a claim, not a one-line verdict on it.\n")
+A(f"One such verdict has already moved. On the current results the ranges are "
+  f"{_rng}, so **decomposing inside the forecaster no longer cleanly beats the "
+  f"decompose-then-forecast pipeline** -- that separation held on two seeds and "
+  f"does not on three. Section 6.\n")
 
 A("\n## 1. The leakage finding\n")
 A("This is the result the project rests on, and nothing in the later work "
@@ -440,21 +437,36 @@ if STAB:
     ip = [r["test_mae"] for r in STAB if PATH.get(r["arm"]) == "internal"]
     pp = [r["test_mae"] for r in STAB if PATH.get(r["arm"]) == "precomputed"]
     if ip and pp:
+        _sep = max(ip) < min(pp)
+        _spread = max(max(ip) - min(ip), max(pp) - min(pp))
         A(f"\nEvery internal run lands in **{min(ip):.3f}-{max(ip):.3f}**; every "
           f"precomputed run lands in **{min(pp):.3f}-{max(pp):.3f}**. "
-          f"{'No overlap.' if max(ip) < min(pp) else 'They overlap.'} The gap "
-          f"between the groups is larger than the seed spread within either.")
-    A("\nThe isolation is clean because `fixed_geo` and `bank` are **the same "
-      "Gaussian filter bank**, differing only in whether the decomposition "
-      "happens inside the model or is precomputed per timestep. Holding the "
-      "basis fixed and moving only the delivery path reproduces most of the "
-      "margin, so this is an architectural effect and not a basis effect.")
-    A("\n**This is the result to build the paper on.** A neural decomposition "
-      "layer is worth having, it does not depend on the learned parameters "
-      "doing anything -- which is what makes it robust to the \"did you tune "
-      "the baseline as hard\" objection -- and it transfers: any decomposition "
-      "expressible as a differentiable filtering step can be moved inside the "
-      "model.")
+          + (f"No overlap, and the gap between the groups is larger than the "
+             f"seed spread within either."
+             if _sep else
+             f"**They overlap.** An earlier version of this section reported "
+             f"separation; that held on two seeds per arm and does not on "
+             f"three. The within-group spread is now {_spread:.3f}, against a "
+             f"seed noise of 0.116, so the delivery path is not resolved by "
+             f"these runs. What the numbers still support is the weaker "
+             f"statement that the *worst* outcomes are all on the precomputed "
+             f"side."))
+    A("\nThe *comparison* is clean even though the result is not: `fixed_geo` "
+      "and `bank` are **the same Gaussian filter bank**, differing only in "
+      "whether the decomposition happens inside the model or is precomputed "
+      "per timestep. So whatever separation exists is an architectural effect "
+      "and not a basis effect -- the design isolates the right thing. What it "
+      "has not yet done is resolve it.")
+    A("\n**What this can and cannot carry.** It cannot carry a paper on its own "
+      "at three seeds with overlapping ranges. What it does have is a clean "
+      "contrast that costs nothing to extend -- more seeds on `fixed_geo` "
+      "against `bank` is the cheapest open experiment in this document, and it "
+      "either resolves the delivery path or shows the effect was seed noise. "
+      "The attraction of the hypothesis is unchanged: it does not depend on "
+      "the learned parameters doing anything, which is what would make it "
+      "robust to the \"did you tune the baseline as hard\" objection, and it "
+      "transfers to any decomposition expressible as a differentiable "
+      "filtering step.")
     A("\n**The mechanism is plausible but untested.** On the precomputed path "
       "the value at time t is the *last sample* of the decomposition of window "
       "[t-95, t], so a sequence of them is a trajectory of last samples. The "
@@ -606,7 +618,7 @@ contribution column is what is left once that paper is granted. Rows marked
 | **VMD-based price forecasting leaks** | [VMDNet](https://arxiv.org/abs/2509.15394), Feng, Tao, Cartlidge & Zheng, EUSIPCO 2026 -- asserts leakage, fixes it with sample-wise VMD, does not measure it | **A measurement and a characterisation.** The window alone raises per-mode AR extrapolation error **6.6x** (4.288 to 15.907). And what leaks is identified, not just detected: a **625-parameter linear regression (MAE 4.29) beats a 5.7M-parameter CNN-BiLSTM (13.42)** on the leaked modes, so the modes carry a *linearly readable aggregate* of the future rather than a hard forecasting signal. Capacity is irrelevant because nothing is being forecast -- the answer is being read off. |
 | | | **Two mechanisms separated.** Per-year VMD is both leaky *and* perfectly consistent across windows, because one decomposition serves the whole year. The literature reports the combined effect. Causal VMD removes the leak and loses the consistency; a fixed bank keeps consistency without the leak. The published 7.11 MAE reproduces exactly and degrades to ~10.7 once segmented. |
 | **The decomposition can be made learnable** | [Adaptive Deep-Unfolded VMD](https://arxiv.org/html/2509.00703), Sept 2025 -- unrolls VMD's ADMM into a differentiable module with learnable per-mode bandwidths, per series, on traffic | **Not an unrolled solver.** There is no VMD objective, no ADMM, and no reconstruction loss anywhere in this model. It is a band-parameterised filter bank of **16 parameters** whose centres and bandwidths are **co-trained by the predictive objective alone**, inside the forward pass. The bands are whatever minimises forecast error, not whatever minimises a decomposition criterion. |
-| | | **And the delivery path is itself a finding.** Decomposing inside the forecaster beats handing it precomputed per-timestep modes -- 14.106-14.221 against 14.262-14.817, no overlap, same filter bank. The entire decompose-then-forecast literature uses the losing path. |
+| | | **And the delivery path is a live question.** *Internal* means decomposing the raw window inside the forward pass, so the model sees $K$ waveforms of length $L$. *Precomputed* means decomposing offline per window, keeping only each mode's last sample, and stringing those endpoints into a series -- $K$ numbers per timestep. That is what the whole decompose-then-forecast literature does, and it discards most of the decomposition. Internal looked strictly better on two seeds; on three the ranges **overlap** (section 6), so this is posed, not settled. |
 | **Spatial information helps price forecasting** | multi-price-zone STGNNs (Applied Energy 2024), R-vine copula spatial dependence (Int. J. Forecasting 2023), PJM LMP spatiotemporal deep learning | **The coupling is indexed by frequency band.** An STGNN learns one adjacency $A_{ij}$. `PerBandSpatialCoupling` learns $A_{ij}^{(k)}$, one $R \\times R$ matrix per band, over physical bands -- DC, 74.7 h, 26.3 h, 12.1 h, 6.3 h, 3.4 h, 1.8 h, 1.0 h. |
 | **Channels can be decomposed jointly** | MVMD (Rehman & Aftab 2019), now standard on wind and marine panels, stated aim to preserve cross-source correlation *during* decomposition | **Coupling by parameterisation rather than by constraint.** MVMD ties channels by forcing shared centre frequencies and learns no cross-channel weight. Here the bands are shared and a learned matrix per band says how much of each other channel enters. |
 | **Multi-scale decomposition plus a graph model** | Rawal & Ahmad 2024, wavelet/EMD then mutual-information graph then modified GCNN | **Coupling inside the decomposition, not after it.** Theirs is sequential: decompose, build a graph, run a GCNN. |
