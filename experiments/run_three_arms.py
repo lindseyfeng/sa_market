@@ -292,7 +292,16 @@ def run_arm(arm, seed, data, args, device):
         for x, y in tr_dl:
             x, y = x.to(device), y.to(device)
             p = model(x)[3]
-            loss = F.mse_loss(p, y)
+            # The objective and the headline metric have to agree.  Training on
+            # MSE while selecting and reporting MAE lets any arm with spare
+            # capacity spend it on the tail -- which is exactly the
+            # MAE-worse/RMSE-better signature the spatial arm kept showing.
+            if args.loss == "mse":
+                loss = F.mse_loss(p, y)
+            elif args.loss == "l1":
+                loss = F.l1_loss(p, y)
+            else:                                   # huber
+                loss = F.smooth_l1_loss(p, y, beta=args.huber_beta)
             if arm.startswith("nvmd"):
                 dec = model.decomposer.decomposer
                 loss = loss + 0.05 * dec.bandwidth_loss(x[:, :1]) \
@@ -352,6 +361,10 @@ def main():
     ap.add_argument("--band-lr", type=float, default=3e-4)
     ap.add_argument("--coupling-lr", type=float, default=1e-2)
     ap.add_argument("--w-sparse", type=float, default=0.01)
+    ap.add_argument("--loss", default="mse", choices=["mse", "huber", "l1"],
+                    help="training objective; mse reproduces the original runs")
+    ap.add_argument("--huber-beta", type=float, default=1.0,
+                    help="Huber crossover, in standardized target units")
     ap.add_argument("--seeds", default="1,2,3")
     ap.add_argument("--arms", default=",".join(ARMS))
     # CPU by default: MPS has no rfft, so the NVMD arms cannot run there, and

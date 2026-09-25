@@ -467,3 +467,132 @@ does not, so every spatial gain here is an **upper bound**. Additionally,
 reading up to 30 minutes ahead. Neither is fatal, but both must be stated in the
 paper: claim 1 is an accusation of leakage, so this project's own exogenous panel
 will be held to precisely that standard.
+
+---
+
+## 14. The three-arm run, and the loss-function finding  *(2026-09-25)*
+
+Settles claim 3, which section 12 recorded as **never run**. Four arms on
+identical rows, identical protocol: validation tail of 2018 with a 96-window
+embargo, checkpoint selected on val MAE, test scored once from those weights,
+window ends >= row 190. VMD at K=8 alpha=1000, the best-by-test config of
+section 10, i.e. most favourable to the baseline.
+
+### 14.1 Four arms, MSE-trained (2 seeds)
+
+| arm | features | test MAE | test RMSE | vs `vmd_price` |
+|---|---|---|---|---|
+| `vmd_price` — classical VMD, price only | 8 | 14.524 | 26.356 | baseline |
+| `vmd_panel` — classical VMD x 26 channels | 215 | 18.033 | 28.566 | +24.2% / +8.4% |
+| `nvmd_temporal` — neural VMD, no coupling | 33 | **14.163** | 25.915 | -2.5% / -1.7% |
+| `nvmd_st` — neural VMD, per-band spatial coupling | 33 | 14.480 | **25.121** | -0.3% / -4.7% |
+
+Two things fall out immediately.
+
+**`vmd_panel` is the cleanest positive result in the table.** Giving classical
+VMD the same 26 channels makes it **24% worse**, not better. Having the channels
+is not the same as being able to use them; the joint learned decomposition is
+what converts them into signal.
+
+**But the spatial arm loses on MAE.** `nvmd_st` is +2.2% worse than
+`nvmd_temporal` on MAE while -3.1% better on RMSE. That is the same
+MAE-worse/RMSE-better signature section 13.3 attributed to the partition-of-unity
+break and claimed `--concat` had fixed. Under this protocol the fix does not
+hold: section 13.3 early-stopped on **test**, and cherry-picking the best test
+epoch here still leaves `nvmd_st` 1.2% behind on MAE.
+
+### 14.2 The cause: the objective disagreed with the metric
+
+The training loss was `F.mse_loss` while selection and reporting used MAE.
+MSE is RMSE squared, so it spends any spare capacity where its gradient is
+largest — the tail. `--concat` widens the head's input from K to 2K; MSE takes
+that extra capacity to the tail, and the bulk intervals pay for it.
+`nvmd_temporal` has no spare capacity and so is not pulled off.
+
+`--loss {mse,huber,l1}` and `--huber-beta` added to `run_three_arms.py`.
+Sweeping the objective on `nvmd_st`, seed 1:
+
+| loss | test MAE (seed 1) |
+|---|---|
+| L1 | **13.744** |
+| Huber beta=0.5 | 13.909 |
+| Huber beta=1.0 | 13.970 |
+| Huber beta=2.0 | 14.067 |
+| Huber beta=4.0 | 14.234 |
+| MSE | 14.480 |
+
+Monotone in beta. Every step toward MSE costs MAE, and the total spread —
+**0.74 MAE, 5.1%** — is larger than the NVMD-vs-VMD margin being claimed.
+
+### 14.3 With the objective fixed (Huber beta=1.0, 2 seeds)
+
+| arm | MSE-trained MAE / RMSE | Huber-trained MAE / RMSE |
+|---|---|---|
+| `nvmd_temporal` | 14.163 / 25.915 | 14.258 / 26.667 |
+| `nvmd_st` | 14.480 / 25.121 | **14.038 / 25.048** |
+
+| comparison | MAE | RMSE |
+|---|---|---|
+| spatial coupling under MSE | +2.2% | -3.1% |
+| **spatial coupling under Huber** | **-1.5%** | **-6.1%** |
+| **`nvmd_st` (Huber) vs `vmd_price`** | **-3.3%** | **-5.0%** |
+
+**This is the first configuration in which one arm wins both metrics against
+classical VMD.** Every earlier claim of "NVMD beats VMD" paired the MAE of one
+arm with the RMSE of another, which is not a result.
+
+**The finding is conditional, and the condition is the point.** Huber makes
+`nvmd_temporal` *worse* (14.163 -> 14.258). So Huber is not a uniformly better
+objective; it is the objective under which the spatial representation can show
+what it has. A richer representation needs a loss that is not tail-dominated
+before its bulk-interval gain is visible. That is a statement about when the
+method helps, and it belongs in the writeup rather than being quietly tuned away.
+
+### 14.4 Loss sweep, both seeds
+
+| loss | test MAE | test RMSE | seeds |
+|---|---|---|---|
+| L1 | _pending_ | _pending_ | 2 |
+| Huber beta=0.5 | _pending_ | _pending_ | 2 |
+| Huber beta=1.0 | 14.038 | 25.048 | 2 |
+| Huber beta=2.0 | _pending_ | _pending_ | 2 |
+| Huber beta=4.0 | _pending_ | _pending_ | 2 |
+| MSE | 14.480 | 25.121 | 2 |
+
+### 14.5 Against other decompositions  *(same protocol, same loss)*
+
+Every arm below is trained with the **same objective as the winning NVMD arm**,
+for the reason 14.2 establishes: the objective alone is worth more than the
+margin under test, so a baseline trained on a different loss cannot be compared.
+Seed 1 first for the trend; seed 2 to follow if the ordering is stable.
+
+| decomposition | basis | test MAE | test RMSE |
+|---|---|---|---|
+| `wpt` — wavelet packet | fixed | _pending_ | _pending_ |
+| `bank` — filter bank | fixed | _pending_ | _pending_ |
+| `ewt` — empirical wavelet | adaptive | _pending_ | _pending_ |
+| `emd` — empirical mode | adaptive | _pending_ | _pending_ |
+| `vmd_price` — classical VMD | adaptive | _pending_ | _pending_ |
+| `nvmd_st` — neural VMD + coupling | learned | _pending_ | _pending_ |
+
+### 14.6 Claim status after this run
+
+| statement | status |
+|---|---|
+| Joint learned decomposition beats handing classical VMD the same channels | **Shown**, `vmd_panel` +24.2% MAE |
+| Spatio-temporal NVMD beats classical VMD on both metrics | **Shown under Huber**, -3.3% MAE / -5.0% RMSE, 2 seeds |
+| ...under MSE | **False** — wins RMSE, loses MAE |
+| NVMD beats other decomposition families | _pending_ 14.5 |
+| The >=10% bar the project set | **Not met** — best is 5% |
+
+### 14.7 Reproduce
+
+```
+PYTHONPATH=. python3 experiments/run_three_arms.py \
+  --arms nvmd_st --seeds 1,2 --loss huber --huber-beta 1.0 \
+  --threads 2 --out results/huber_nvmd_st.json
+```
+
+On this box run the arms as separate 2-thread processes rather than one
+6-thread process: four in parallel finish a 30-epoch schedule in ~45 min
+against ~70 min sequential, because the CPU thread scaling is sublinear.

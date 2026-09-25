@@ -1,0 +1,14 @@
+[
+  {
+    "arm": "nvmd_st",
+    "seed": 1,
+    "val_mae": 12.787736292224775,
+    "test_mae": 13.908686369368173,
+    "test_rmse": 25.165353083719623,
+    "epoch": 18,
+    "test_mae_cherry": 13.76704215633059,
+    "test_rmse_cherry": 24.616619120360678,
+    "epoch_cherry": 27,
+    "n_feat": 33
+  }
+]
