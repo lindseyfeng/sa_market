@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-25 12:54*
+*generated 2026-09-25 13:50*
 
 ## Summary
 
@@ -421,7 +421,11 @@ was losing by 0.098; it now wins by 0.334, and the objective change is worth
 
 1. ~~**The baseline has not been re-run under the same objective.**~~
    **Done.** Under Huber the baseline reaches 14.232 / 26.564 and the margin
-   becomes -1.4% MAE, -5.7% RMSE. The L1 pair is still running.
+   becomes -1.4% MAE, -5.7% RMSE. The L1 pair has finished too, 2 seeds:
+   **14.072 / 26.446** (14.091/26.553 and 14.053/26.339). Against it
+   `nvmd_st` under L1 scores 13.744 / 25.077, so **-2.3% MAE, -5.2%
+   RMSE** -- a wider margin than the Huber pairing. But the treated arm
+   there is **single-seed**, so the Huber row stays the one to quote.
 2. **Two seeds against a seed noise of 0.116** (section 8). The two Huber seeds
    are 13.970 and 14.105, a spread of 0.135, so the 0.334 margin is about three
    times the noise. The L1 and Huber-0.5 rows are single-seed and cannot be read
@@ -446,9 +450,9 @@ contribution column is what is left once that paper is granted. Rows marked
 | **Channels can be decomposed jointly** | MVMD (Rehman & Aftab 2019), now standard on wind and marine panels, stated aim to preserve cross-source correlation *during* decomposition | **Coupling by parameterisation rather than by constraint.** MVMD ties channels by forcing shared centre frequencies and learns no cross-channel weight. Here the bands are shared and a learned matrix per band says how much of each other channel enters. |
 | **Multi-scale decomposition plus a graph model** | Rawal & Ahmad 2024, wavelet/EMD then mutual-information graph then modified GCNN | **Coupling inside the decomposition, not after it.** Theirs is sequential: decompose, build a graph, run a GCNN. |
 | **Multi-scale decomposition for EPF** | WT-SAE-LSTM, WPD-TCN-LSTM, MODWT+EMD+Seq2Seq, VMD-LSTM; 2025-26 adds VMD+attention, VMD+Transformer, V-MAF | **Nothing.** This is not a contribution and should not be claimed as one. V-MAF in particular fuses VMD features with channel attention; the difference from this design is that band indexing is structural rather than learned by an attention head. |
-| **Spatial dependence is scale-dependent** | -- | *Pending.* This would be the claim worth making, and it is a claim about the market rather than about a model. See below: the evidence originally offered for it has been withdrawn. |
+| **Spatial dependence is scale-dependent** | -- | **Supported by intervention, 2 seeds.** This is the claim worth making, and it is about the market rather than about a model. Zeroing the exogenous term band by band costs **0.52 MAE** at ~12 h and **nothing** at DC or ~73 h; the top three bands carry 84-88% of the effect and the eight values correlate **+0.894** across seeds. Weight inspection scored -0.409 on the same question and was withdrawn. Still marginal rather than driver-resolved -- see below. |
 
-### The status of the last row
+### Scale dependence, measured by intervention
 
 The obvious evidence -- read $A_k$ and see which driver sits in which band --
 does not survive a second seed.
@@ -460,21 +464,92 @@ does not survive a second seed.
 > sign is identifiable. Band concentration is **0.205** against **0.125** for a
 > channel spread evenly across all eight bands, and the largest coupling mass
 > sits at the **1.0 h** band where the signal is mostly noise.
->
-> What *is* stable is magnitude: per-channel total $|w|$ correlates **+0.936**
-> across seeds, and both seeds rank `ramp_VIC1`, `ramp_SA1`, `demand_NSW1`
-> first. **Which** channels are used reproduces; **at which band** does not.
 
-The instrument has to be intervention, not inspection: zero a contribution and
-measure the damage, which the sign symmetry cannot touch
-(`analysis/band_ablation.py`, running). Three outcomes, written down in advance
-so the result is not read backwards:
+So the instrument has to be intervention: zero a contribution in the trained
+model and measure the damage, which the sign symmetry cannot touch
+(`analysis/band_ablation.py`). Three outcomes, written down before the run so
+the result could not be read backwards:
 
-| $\Delta L_{k,c}$ comes out | then |
-|---|---|
-| band-specific and stable across seeds | the claim stands, on intervention evidence rather than weight inspection -- a stronger footing than reading $A_k$ ever had |
-| stable but **flat across bands** | the model was given the freedom and largely declined to use it. A clean negative result about scale-specificity, publishable as one |
-| near zero everywhere | the exogenous block is redundant conditioning, consistent with taking 60-95% of head input variance for ~1% MAE. The spatial line closes |
+| $\Delta L$ comes out | then | |
+|---|---|---|
+| band-specific and stable across seeds | the claim stands, on intervention evidence rather than weight inspection -- a stronger footing than reading $A_k$ ever had | **this one** |
+| stable but **flat across bands** | the model was given the freedom and largely declined to use it. A clean negative result about scale-specificity, publishable as one | |
+| near zero everywhere | the exogenous block is redundant conditioning, consistent with taking 60-95% of head input variance for ~1% MAE. The spatial line closes | |
+
+Both checkpoints re-score to their recorded validation-selected MAE within
+$2\times10^{-7}$ -- **13.983** and **14.092**. That guard is the reason this
+section exists twice: the first run of the script compared a $(B,1)$ prediction
+against a squeezed target, broadcast to $(B,B)$, and inflated every number by
+three orders of magnitude. The cross-seed correlations it produced, **+0.923**
+and **+0.977**, looked exactly like confirmation of the hypothesis.
+
+**Band marginal -- zero band $k$'s entire exogenous term.** $\Delta$MAE in
+AUD/MWh; higher means the band's exogenous information was load-bearing.
+
+| band | seed 1 | seed 2 | mean |
+|---|---:|---:|---:|
+| DC | +0.004 | -0.043 | -0.019 |
+| ~73 h | -0.022 | -0.015 | -0.019 |
+| ~26 h | +0.100 | +0.042 | +0.071 |
+| **~12 h** | **+0.459** | **+0.583** | **+0.521** |
+| **~6 h** | +0.283 | +0.234 | **+0.258** |
+| ~3.3 h | +0.016 | +0.180 | +0.098 |
+| **~1.8 h** | +0.225 | +0.143 | **+0.184** |
+| ~1.0 h | +0.038 | +0.058 | +0.048 |
+
+**Band-specific and stable, so the first row fires.** The ~12 h band alone
+costs **0.52 MAE**, four and a half times the 0.116 seed noise of section 8,
+while DC and the ~73 h trend cost nothing at all. The top three bands carry
+**84-88%** of the total. Across seeds the eight values correlate **+0.894**
+(Spearman **+0.810**) and both seeds rank ~12 h first, ~6 h second. Weight
+inspection scored **-0.409** on the same question.
+
+It is worth naming *what* the scale dependence is in. ~12 h and ~6 h are the
+semidiurnal and quarter-diurnal harmonics -- the solar ramp -- and ~1.8 h is
+about dispatch-interval reaction. The bands that carry nothing are the slow
+ones, where SA1 and its neighbours move together anyway and a neighbour tells
+the target nothing it does not already hold.
+
+**Channel marginal -- zero channel $c$ across all eight bands.**
+
+| channel | seed 1 | seed 2 | mean |
+|---|---:|---:|---:|
+| **`ramp_VIC1`** | **+0.928** | **+1.146** | **+1.037** |
+| `spread_SA1_QLD1` | +0.138 | +0.120 | +0.129 |
+| `ramp_SA1` | +0.117 | +0.127 | +0.122 |
+| `wind100_sesa_wind` | +0.077 | +0.050 | +0.063 |
+| `wind100_nsa_wind` | +0.029 | +0.074 | +0.052 |
+| `wind100_adelaide` | +0.065 | +0.032 | +0.048 |
+| `demand_QLD1` | -0.063 | -0.074 | -0.068 |
+| `cal_year_sin` | -0.052 | -0.096 | -0.074 |
+
+**One channel is the result.** `ramp_VIC1` -- the first difference of VIC1
+demand, `data/build_compound_panel.py:110` -- costs **1.04 MAE** by itself,
+**73-83%** of the summed channel effect, in both seeds. Nothing else exceeds
+0.13, and the twelve weather channels contribute at most 0.06 each.
+
+Physically that is the right channel. VIC1 sits across the Heywood
+interconnector, SA1-VIC1 price correlation is 0.914, and a change in VIC1
+demand is what moves flow into SA1 and therefore SA1's price. It is also a
+warning in two directions. The channel correlation of **+0.983** across seeds
+is carried by that single point: drop it and the other 31 channels correlate
+**+0.777**, Spearman **+0.679**, so the ranking below the top is only
+moderately reproducible. And a spatial panel whose measurable benefit is one
+neighbour's demand ramp does not need 32 channels.
+
+**Two limits on how far these numbers go.**
+
+- **Ablation is not retraining.** The $\Delta$MAE sum to 1.10-1.38, five to six
+  times the end-to-end spatial gain (`nvmd_st` 14.038 against
+  `nvmd_temporal` 14.258 on matched Huber, **0.220**). Taking away an input a
+  trained head has learned to lean on is strictly worse than never having had
+  it. These numbers rank bands and channels against each other; they are not
+  the value of the information.
+- **They are marginals, not the $\Delta L_{k,c}$ grid.** "The ~12 h band
+  matters" and "`ramp_VIC1` matters" are two separate measurements. Together
+  they do not establish that `ramp_VIC1` matters *at* ~12 h, which is the
+  driver-resolved form of the claim. The grid over the top four channels is
+  running (`--cells 1`).
 
 
 ## 10. Caveats

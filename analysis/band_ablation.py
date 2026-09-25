@@ -26,8 +26,13 @@ ap.add_argument("--test-years", default="2019")
 ap.add_argument("--seq-len", type=int, default=96)
 ap.add_argument("--batch", type=int, default=256)
 ap.add_argument("--out", default="results/band_ablation.json")
+ap.add_argument("--cells", type=int, default=0,
+                help="also run the (band, channel) grid for --cell-top channels")
+ap.add_argument("--cell-top", type=int, default=4,
+                help="how many channels, ranked by their own marginal dMAE")
+ap.add_argument("--threads", type=int, default=4)
 a = ap.parse_args()
-torch.set_num_threads(4)
+torch.set_num_threads(a.threads)
 
 df = pd.read_csv(a.panel, parse_dates=["SETTLEMENTDATE"])
 chans = [c for c in df.columns if c != "SETTLEMENTDATE"]
@@ -80,7 +85,9 @@ for path in a.ckpt:
     for k in range(K):
         model.decomposer.coupling.delta.data = delta.clone()
         model.decomposer.coupling.delta.data[k, 0, :] = 0.0      # row t, band k
-        model.decomposer.coupling.delta.data[k, 0, 0] = -1.0     # kill the identity too
+        # NB in concat mode `exogenous()` zeroes the self term itself, so this
+        # line is a no-op here.  Kept for the mix-mode path.
+        model.decomposer.coupling.delta.data[k, 0, 0] = -1.0
         band.append(mae(model) - base)
     model.decomposer.coupling.delta.data = delta.clone()
     print("  band ablation, dMAE (higher = the band's exogenous term matters more)")
@@ -100,8 +107,24 @@ for path in a.ckpt:
     for i in order:
         print(f"    {chans[i+1]:24} {chan[i]:+7.4f}")
 
+    cells = None
+    if a.cells:
+        top = np.argsort(-np.array(chan))[:a.cell_top]        # index into chans[1:]
+        cells = {}
+        for i in top:
+            c = int(i) + 1
+            row = []
+            for k in range(K):
+                model.decomposer.coupling.delta.data = delta.clone()
+                model.decomposer.coupling.delta.data[k, 0, c] = 0.0
+                row.append(mae(model) - base)
+            cells[chans[c]] = row
+            print(f"  cell grid {chans[c]:22} " +
+                  " ".join(f"{labs[k]}:{row[k]:+.3f}" for k in range(K)))
+        model.decomposer.coupling.delta.data = delta.clone()
+
     OUT[path] = dict(base=base, recorded=rec, labels=labs,
-                     band=band, chan=chan, chan_names=chans[1:])
+                     band=band, chan=chan, chan_names=chans[1:], cells=cells)
 
 Path("results").mkdir(exist_ok=True)
 json.dump(OUT, open(a.out, "w"), indent=1)

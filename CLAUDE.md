@@ -25,7 +25,17 @@ baseline it does not resemble and invites the wrong review.
 | 2 | The same band structure costs 10²–10⁵× less | **Strong** |
 | 3 | Decomposing **inside** the forecaster beats the classical decompose-then-forecast pipeline | **Supported**, 2 seeds, no overlap |
 | 4 | Classical modes fail on the **physics of the bands**, not the choice of algorithm | **Supported** |
-| 5 | Spatio-temporal beats VMD | **Fails as stated.** Line still open |
+| 5 | Spatio-temporal beats VMD | **Supported on a matched objective**, 2 seeds. Failed only against an MSE baseline |
+| 6 | Spatial dependence is **scale-dependent** | **Supported by intervention**, 2 seeds, band marginals only |
+
+Claims 5 and 6 are new and both turn on methodology rather than architecture.
+Claim 5 failed for as long as it did because every VMD baseline was on **MSE**
+while the spatial arm needed Huber: on a matched objective the arm wins both
+metrics (14.038/25.048 vs 14.232/26.564). Claim 6 rests on **functional
+ablation**, not on reading $A_k$ -- the couplings are not sign-identifiable, so
+weight inspection scored -0.409 across seeds where intervention scores +0.894.
+Its uncomfortable half: one channel, `ramp_VIC1`, is 73-83% of the whole
+exogenous effect.
 
 Claim 4 is the one that makes the null results legible. Every classical method
 hands the model bands with the same defects: VMD's lowest band is 2.5× wider
@@ -44,6 +54,18 @@ within 0.002, basis churn spanning 26× with no effect. Vary what the bands
   CSV, so sections 2, 8 and 13.3 of `attic/RESULTS-superseded.md` report a minimum over epochs.
   That does not subsidise all arms equally: it subsidises the high-variance one
   (+0.170 for the spatial arm against +0.016 elsewhere).
+- **The objective is a confound, not a hyperparameter.** Every VMD baseline
+  trained on MSE while `--concat` gives the head a block of spare capacity that
+  MSE spends on the tail. Matching the loss moved `nvmd_st` 0.442 MAE against
+  the baseline's 0.140 and flipped claim 5 from lose-by-0.098 to win-by-0.334.
+  Never compare a wide arm to a narrow one on an objective chosen for one of them.
+- **Intervene, do not read the weights.** $A_k \to -A_k$ with $W \to -W$ is a
+  symmetry, so no coupling's sign is identifiable and cross-seed weight
+  correlation is meaningless (-0.409). Functional ablation is invariant to it
+  (+0.894). Guard every ablation with a re-score of the unmodified model against
+  the recorded MAE: the first run of `band_ablation.py` broadcast a $(B,1)$
+  prediction against a squeezed target and produced +0.923/+0.977 seed
+  correlations that looked exactly like confirmation.
 - **Seed noise dominates.** One method varies 0.116 across seeds while five
   decomposition families span 0.04. Any unpaired single-seed margin is noise.
 - **Delivery path is a confound.** Precomputed per-timestep modes and in-model
