@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-25 12:48*
+*generated 2026-09-25 12:52*
 
 ## Summary
 
@@ -79,7 +79,7 @@ The decomposition is **lossless**, so no residual channel is needed and none can
 
 ![architecture](figures/architecture_nvmd_st.png)
 
-*`analysis/plot_architecture.py`, drawn from the code. The visual centre is the per-band coupling: one $R\times R$ matrix per frequency band, which is the part of this design the literature does not already contain (section 9).*
+*`analysis/plot_architecture.py`, drawn from the code. Steps 1-6 above are the left column and the head; the teal block at the bottom is the **spatial variant**, introduced in the next subsection, and is absent in the temporal model. Its visual weight is deliberate -- one $R\times R$ matrix per frequency band is the part of this design the literature does not already contain (section 9).*
 
 ### What "fixed across windows" does and does not mean
 
@@ -116,22 +116,6 @@ The decomposition is **0.0026%** of the model. Whatever it contributes is struct
 
 Section 7 measures what those 16 parameters are worth: training them rather than hard-coding them moves test MAE by **0.002**, against a seed spread of 0.11. The layer pays; the learning does not.
 
-```mermaid
-flowchart LR
-  X["price window<br/>x : (B, 1, L)"] --> F["rFFT"]
-  G["gap logits θ (K)"] --> SM["softmax → cumsum<br/>→ rescale to [0, ½]"]
-  SM --> C["centres c_k<br/>strictly increasing<br/>c_1 = DC"]
-  BW["log bandwidth β (K)"] --> B["widths b_k<br/>tied to the local gap"]
-  C --> M["Gaussian masks<br/>normalised to a<br/>partition of unity"]
-  B --> M
-  F --> MUL["multiply"]
-  M --> MUL
-  MUL --> I["irFFT"]
-  I --> Z["K modes<br/>sum exactly to x"]
-  Z --> L1["BiLSTM 128 × 2"]
-  L1 --> H["256 → 128 → 1"]
-  H --> Y["ŷ"]
-```
 
 ### The spatial variant
 
@@ -139,17 +123,6 @@ The same bank runs on every channel of the panel -- NEM regional demand, interco
 
 The target's own $K$ modes are carried through **untouched**, and a purely exogenous block of $K$ modes is appended, giving the LSTM $2K$ input channels. $A_k = I + \Delta$ with $\Delta$ zero-initialised and shape $(K, R, R)$, so at step 0 the model is exactly the temporal one and can only depart from it if the data pays. That adds 8,704 parameters.
 
-```mermaid
-flowchart LR
-  P["panel<br/>(B, R, L)"] --> BK["shared filter bank<br/>per channel"]
-  BK --> MM["modes (B, R, K, L)"]
-  MM --> OWN["target's own K modes<br/>lossless, untouched"]
-  MM --> CP["per-band mixing A_k<br/>self weight zeroed"]
-  CP --> EXO["exogenous block (B, K, L)<br/>zero at init"]
-  OWN --> CAT["concat → 2K channels"]
-  EXO --> CAT
-  CAT --> LS["BiLSTM + head"]
-```
 
 An earlier version let the mixed modes **replace** the target's own. That destroys the partition of unity -- reconstruction error 0.00 to 1.82, cross terms 2-6.5x the self term -- so the head never saw a faithful price encoding. It corrupted the DC and daily bands, which carry ~88% of ordinary intervals, while the fast bands gained real spike information. **MAE got worse while RMSE got better**, consistently. Section 9 has what the concat form is actually worth.
 

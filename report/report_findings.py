@@ -142,10 +142,12 @@ A("**6. Forecast.** The $K$ modes go to a 2-layer bidirectional LSTM with "
   "hidden size 128, then a $256 \\rightarrow 128 \\rightarrow 1$ head.\n")
 
 A("![architecture](figures/architecture_nvmd_st.png)\n")
-A("*`analysis/plot_architecture.py`, drawn from the code. The visual centre is "
-  "the per-band coupling: one $R\\times R$ matrix per frequency band, which is "
-  "the part of this design the literature does not already contain (section "
-  "9).*\n")
+A("*`analysis/plot_architecture.py`, drawn from the code. Steps 1-6 above are "
+  "the left column and the head; the teal block at the bottom is the **spatial "
+  "variant**, introduced in the next subsection, and is absent in the temporal "
+  "model. Its visual weight is deliberate -- one $R\\times R$ matrix per "
+  "frequency band is the part of this design the literature does not already "
+  "contain (section 9).*\n")
 A("### What \"fixed across windows\" does and does not mean\n")
 A("It does **not** mean the band parameters are untrained. It means they are "
   "**global model parameters**: learned through the forecast loss, but shared "
@@ -189,22 +191,6 @@ A("Section 7 measures what those 16 parameters are worth: training them rather "
   "than hard-coding them moves test MAE by **0.002**, against a seed spread of "
   "0.11. The layer pays; the learning does not.\n")
 
-A("```mermaid")
-A("flowchart LR")
-A("  X[\"price window<br/>x : (B, 1, L)\"] --> F[\"rFFT\"]")
-A("  G[\"gap logits θ (K)\"] --> SM[\"softmax → cumsum<br/>→ rescale to [0, ½]\"]")
-A("  SM --> C[\"centres c_k<br/>strictly increasing<br/>c_1 = DC\"]")
-A("  BW[\"log bandwidth β (K)\"] --> B[\"widths b_k<br/>tied to the local gap\"]")
-A("  C --> M[\"Gaussian masks<br/>normalised to a<br/>partition of unity\"]")
-A("  B --> M")
-A("  F --> MUL[\"multiply\"]")
-A("  M --> MUL")
-A("  MUL --> I[\"irFFT\"]")
-A("  I --> Z[\"K modes<br/>sum exactly to x\"]")
-A("  Z --> L1[\"BiLSTM 128 × 2\"]")
-A("  L1 --> H[\"256 → 128 → 1\"]")
-A("  H --> Y[\"ŷ\"]")
-A("```")
 
 A("\n### The spatial variant\n")
 A("The same bank runs on every channel of the panel -- NEM regional demand, "
@@ -217,17 +203,6 @@ A("The target\'s own $K$ modes are carried through **untouched**, and a purely "
   "channels. $A_k = I + \\Delta$ with $\\Delta$ zero-initialised and shape "
   "$(K, R, R)$, so at step 0 the model is exactly the temporal one and can only "
   "depart from it if the data pays. That adds 8,704 parameters.\n")
-A("```mermaid")
-A("flowchart LR")
-A("  P[\"panel<br/>(B, R, L)\"] --> BK[\"shared filter bank<br/>per channel\"]")
-A("  BK --> MM[\"modes (B, R, K, L)\"]")
-A("  MM --> OWN[\"target's own K modes<br/>lossless, untouched\"]")
-A("  MM --> CP[\"per-band mixing A_k<br/>self weight zeroed\"]")
-A("  CP --> EXO[\"exogenous block (B, K, L)<br/>zero at init\"]")
-A("  OWN --> CAT[\"concat → 2K channels\"]")
-A("  EXO --> CAT")
-A("  CAT --> LS[\"BiLSTM + head\"]")
-A("```")
 A("\nAn earlier version let the mixed modes **replace** the target\'s own. "
   "That destroys the partition of unity -- reconstruction error 0.00 to 1.82, "
   "cross terms 2-6.5x the self term -- so the head never saw a faithful price "
