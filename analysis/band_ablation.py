@@ -41,10 +41,14 @@ print(f"{len(chans)} channels, {len(te_ds)} test windows, target = {chans[0]}")
 
 @torch.no_grad()
 def mae(model):
+    """p and y are both (B, 1).  Squeezing only one of them broadcasts to
+    (B, B) and inflates the error by ~3 orders of magnitude -- the bug that
+    invalidated the first run of this script."""
     e = 0.0; n = 0
     for x, y in dl:
-        p = model(x)[3].squeeze(-1)
-        e += (p * sd_ + mu - (y * sd_ + mu)).abs().sum().item(); n += len(y)
+        p = model(x)[3]
+        assert p.shape == y.shape, (p.shape, y.shape)
+        e += ((p - y).abs() * sd_).sum().item(); n += len(y)
     return e / n
 
 def load(path):

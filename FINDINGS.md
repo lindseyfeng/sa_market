@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-25 12:52*
+*generated 2026-09-25 12:54*
 
 ## Summary
 
@@ -128,7 +128,7 @@ An earlier version let the mixed modes **replace** the target's own. That destro
 
 ![decomposed waves](figures/decomposed_waves.png)
 
-*One 48 h window of 2019, every band shown before and after coupling. The second panel is the argument: pre-coupling the modes sum to the input exactly, post-coupling they do not. Bands 2-4 -- trend, daily, half-daily -- are visibly rescaled, which is where the ordinary intervals live, while bands 6-8 pick up real spike structure at the right-hand edge. That is the MAE-worse/RMSE-better trade drawn out.*
+*This is the **abandoned** replace mode, kept because it is the evidence for the concat design rather than a picture of the current model. One 48 h window of 2019 with a spike at the right edge; blue is each band before coupling, orange after. The second panel is the whole argument: blue sums to the input exactly, orange does not. Bands 2-4 -- trend, daily, half-daily, where the ordinary intervals live -- are visibly rescaled, while bands 6-8 gain real spike structure. That is the MAE-worse/RMSE-better trade drawn rather than asserted.*
 
 
 ## 4. Why the classical bands underperform: the physics, not the algorithm
@@ -156,10 +156,6 @@ This section is what makes the later null results legible. Swapping decompositio
 
 *Left: band centres over 300 consecutive windows. VMD re-solves and the centres wander -- 12.0% of a band gap per step, crossing half a gap in 30.8% of steps -- while the bank's are flat lines because they are written down once. Right: the period each band is tuned to. Everything in the shaded region is slower than the window itself, so it is a trend slot rather than an oscillation; VMD puts one band there and the bank two. Regenerate with `python3 -m report.plot_drift`.*
 These are properties of the **modes**, and every classical method we tested shares them. That is why sections 7, 8 and 10 come back empty: they vary the *algorithm* while the physics of the resulting bands stays put. The one comparison that does move the metric changes what the bands are.
-![interpretability](figures/interpretability_nvmd_vs_vmd.png)
-
-*Band structure, energy concentration, period coverage and per-mode ablation. Panel D is the one this project loses, and it is included deliberately: a reviewer will run that test.*
-
 
 ### The two constructions, side by side
 

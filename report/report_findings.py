@@ -211,12 +211,14 @@ A("\nAn earlier version let the mixed modes **replace** the target\'s own. "
   "worse while RMSE got better**, consistently. Section 9 has what the concat "
   "form is actually worth.\n")
 A("![decomposed waves](figures/decomposed_waves.png)\n")
-A("*One 48 h window of 2019, every band shown before and after coupling. The "
-  "second panel is the argument: pre-coupling the modes sum to the input "
-  "exactly, post-coupling they do not. Bands 2-4 -- trend, daily, half-daily -- "
-  "are visibly rescaled, which is where the ordinary intervals live, while "
-  "bands 6-8 pick up real spike structure at the right-hand edge. That is the "
-  "MAE-worse/RMSE-better trade drawn out.*\n")
+A("*This is the **abandoned** replace mode, kept because it is the evidence "
+  "for the concat design rather than a picture of the current model. One 48 h "
+  "window of 2019 with a spike at the right edge; blue is each band before "
+  "coupling, orange after. The second panel is the whole argument: blue sums to "
+  "the input exactly, orange does not. Bands 2-4 -- trend, daily, half-daily, "
+  "where the ordinary intervals live -- are visibly rescaled, while bands 6-8 "
+  "gain real spike structure. That is the MAE-worse/RMSE-better trade drawn "
+  "rather than asserted.*\n")
 
 A("\n## 4. Why the classical bands underperform: the physics, not the algorithm\n")
 A("This section is what makes the later null results legible. Swapping "
@@ -264,10 +266,6 @@ A("These are properties of the **modes**, and every classical method we tested "
   "the *algorithm* while the physics of the resulting bands stays put. The one "
   "comparison that does move the metric changes what the bands are.")
 
-A("![interpretability](figures/interpretability_nvmd_vs_vmd.png)\n")
-A("*Band structure, energy concentration, period coverage and per-mode "
-  "ablation. Panel D is the one this project loses, and it is included "
-  "deliberately: a reviewer will run that test.*\n")
 A("\n### The two constructions, side by side\n")
 A("VMD solves, per window, for K modes $u_k$ and centres $\\omega_k$:\n")
 A("$$\\min_{\\{u_k\\},\\{\\omega_k\\}} \\sum_k \\Big\\| "
