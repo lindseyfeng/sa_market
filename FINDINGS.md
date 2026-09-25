@@ -11,6 +11,7 @@
 | 3 | Putting the decomposition **inside** the forecaster beats the classical decompose-then-forecast pipeline | internal 14.106-14.221 vs precomputed 14.262-14.817, no overlap, same filter bank | **Supported**, 2 seeds |
 | 4 | Classical modes underperform because of **what the bands physically are**, not because of which algorithm produced them | VMD's lowest band is 2.5x wider than its own centre, so it smears across DC; the decomposition is effectively 1.6 modes; its slowest resolvable band is the daily cycle itself, so everything slower falls into that smear. Vary the algorithm instead and nothing moves: five families within 0.3%, learned and hard-coded banks within 0.002, churn spanning 26x with no effect | **Supported** |
 | 5 | Spatio-temporal NVMD beats VMD | under MSE, no -- once VMD gets its residual it wins. Under Huber the spatial arm reaches 14.038 / 25.048 against 14.372 / 26.427, **-2.3% MAE and -5.2% RMSE** | **Provisional.** The objective was the confound; the baseline has not yet been re-run under the same loss. Section 9 |
+| 6 | The per-band couplings say *which driver matters at which timescale* | the couplings are **not identifiable**: five of eight bands correlate at about -0.9 between seeds, -0.409 overall, because $A_k \to -A_k$ with $W \to -W$ is a symmetry of the forecast. Channel *magnitude* does reproduce, +0.936 | **Withdrawn as stated.** Functional ablation is the correct instrument and is running. Section 12 |
 
 ## 1. The leakage finding
 
@@ -72,6 +73,20 @@ That is a **partition of unity**.
 $$\sum_{k=1}^{K} z_k = x$$
 
 The decomposition is **lossless**, so no residual channel is needed and none can become a junk dump. Measured reconstruction error is 4.8e-07, which is float32 round-off.
+
+Collapsed into one operator, the whole decomposition is
+
+$$z_k(t) \;=\; \mathcal{F}^{-1}\Big[\,M_k(f)\,\mathcal{F}[x(t)]\,\Big] \;=\; \mathcal{F}^{-1}\left[\frac{\exp\!\big(-\tfrac{(f-c_k)^2}{2b_k^2}\big)}{\sum_{j}\exp\!\big(-\tfrac{(f-c_j)^2}{2b_j^2}\big)}\;\mathcal{F}[x(t)]\right]$$
+
+and the reconstruction is one line, because the normalisation is what makes it true:
+
+$$\sum_{k=1}^{K} z_k(t) \;=\; \mathcal{F}^{-1}\Big[\textstyle\sum_k M_k(f)\,X(f)\Big] \;=\; \mathcal{F}^{-1}\big[X(f)\big] \;=\; x(t)$$
+
+At the level the code actually runs, with $N=L$ real samples and $m$ indexing the $\lfloor N/2\rfloor+1$ rFFT bins:
+
+$$X[m]=\sum_{n=0}^{N-1}x[n]\,e^{-i2\pi mn/N}, \qquad X_k[m]=M_k[m]\,X[m], \qquad z_k[n]=\frac{1}{N}\sum_{m}X_k[m]\,e^{+i2\pi mn/N}$$
+
+So the layer is a **per-bin reweighting of the Fourier coefficients** followed by an inverse transform: $K$ real numbers ($c_k$) plus $K$ more ($b_k$) decide how each frequency bin's energy is split, and nothing else about the signal is touched. That is why the parameter count is 16 against the model's 627,265, and why with `adapt=0` the masks have shape $(1,K,F)$ rather than $(B,K,F)$ -- the operator is the same linear map for every window.
 
 **6. Forecast.** The $K$ modes go to a 2-layer bidirectional LSTM with hidden size 128, then a $256 \rightarrow 128 \rightarrow 1$ head.
 
@@ -442,8 +457,9 @@ Any claim of the form "our decomposition beats VMD by x%" that is not paired acr
 
 ## 12. Where this sits in the literature  *(searched 2026-09-25)*
 
-Three families exist and two of this project's instincts about novelty do not
-survive contact with them.
+Four families exist and **four** of this project's instincts about novelty do
+not survive contact with them. What is left is narrower than it looked, and one
+piece of evidence this section previously leaned on has since been withdrawn.
 
 ### Cannot be claimed
 
@@ -469,6 +485,21 @@ adjacencies (Applied Energy 2024), R-vine copula spatial dependence
 WPD-TCN-LSTM, MODWT+EMD+Seq2Seq, VMD-LSTM all predate this, and 2025-2026 adds
 VMD + attention and VMD + Transformer.
 
+**"We are the first to fuse space and time inside the decomposition itself."**
+No. **MVMD** (Rehman & Aftab 2019) decomposes multiple channels jointly, and is
+in current use on exactly this kind of panel: wind power with multidimensional
+meteorological series, and marine renewables, where the stated aim is to
+"preserve the correlations among multi-source information" during decomposition
+rather than after it. Joint decomposition is occupied.
+
+*What separates this design from MVMD is how the channels are tied, not that
+they are.* MVMD couples by **constraint** -- every channel is forced onto the
+same set of centre frequencies, and no cross-channel weight is learned.
+`PerBandSpatialCoupling` couples by **parameterisation** -- the bands are
+shared, and a separate $R\times R$ matrix per band says how much of each other
+channel enters. Whether that distinction is worth a paper depends on the
+ablation below, not on the architecture diagram.
+
 ### The nearest neighbours
 
 **Rawal & Ahmad 2024**, "Mining latent patterns with multi-scale decomposition
@@ -489,15 +520,37 @@ has to be structural, not empirical.
 | WT/VMD + LSTM/TCN EPF | yes | sometimes, as features | no |
 | STGNN price forecasting | no / implicit | yes | no |
 | Rawal & Ahmad 2024 | yes | yes | not in this form |
+| MVMD on multivariate panels | yes, **jointly** | yes | no -- coupling by shared centres, not learned weights |
 | V-MAF 2025 | yes | yes, fused | attention, not band-conditioned |
 | **this project** | yes, learned causal bands | yes | **yes, explicitly per band** |
 
 A standard STGNN learns one adjacency $A_{ij}$: how related are $i$ and $j$.
 `PerBandSpatialCoupling` learns $A_{ij}^{(k)}$: how related are they **at band
-$k$**. The coupling carries frequency semantics, so "which driver matters at
-which timescale" is a readable object rather than a black-box attention weight
--- and section 13.4 of `attic/RESULTS-superseded.md` already reads it, localising interconnector
-ramp pressure to the daily band and solar and demand to the sub-6-hour bands.
+$k$**. The bands are physical -- DC, 74.7 h, 26.3 h, 12.1 h, 6.3 h, 3.4 h,
+1.8 h, 1.0 h -- so in principle "which driver matters at which timescale" is a
+readable object rather than a black-box attention weight.
+
+> **The evidence for that readability has been withdrawn.** An earlier draft of
+> this section cited section 13.4 of `attic/RESULTS-superseded.md` as already
+> localising interconnector ramp pressure to the daily band and solar and demand
+> to the sub-6-hour bands. Inspecting the trained couplings directly
+> (`analysis/what_was_learned.py`) shows that reading does not survive a second
+> seed: five of the eight bands correlate at about **-0.9** between seeds and
+> three at about **+0.9**, for an overall **-0.409**. That is the signature of a
+> sign symmetry -- $A_k \to -A_k$ with the downstream weights $W \to -W$ leaves
+> the forecast unchanged -- so the sign of any individual coupling is not
+> identifiable and must not be interpreted. Band concentration is **0.205**
+> against **0.125** for a channel spread evenly over all eight bands, so the
+> couplings are only mildly band-specific in the first place, and the largest
+> coupling mass sits at the **1.0 h** band where the signal is mostly noise.
+>
+> What *is* stable is magnitude: per-channel total $|w|$ correlates **+0.936**
+> across seeds, and both seeds put `ramp_VIC1`, `ramp_SA1` and `demand_NSW1`
+> first. So *which* channels are used reproduces; *at which band* does not.
+>
+> The correct instrument is intervention, not inspection: zero a contribution
+> and measure the damage, which is invariant to the sign symmetry. That
+> experiment (`analysis/band_ablation.py`) is running.
 
 ### The framing this implies
 
@@ -506,9 +559,18 @@ is occupied, but:
 
 > **Spatial dependence in electricity markets is scale-dependent.**
 
-That is a claim about the market, evidenced by the per-band couplings, and it
-does not require a 10% MAE improvement to be worth publishing. The forecasting
-numbers become support for it rather than the product.
+That would be a claim about the market rather than about a model, and it would
+not need a 10% MAE improvement to be worth making. **It is not yet supported.**
+The per-band couplings cannot evidence it, for the reason in the box above, and
+the functional ablation that could is still running.
+
+Three outcomes, decided in advance so the result is not read backwards:
+
+| $\Delta L_{k,c}$ comes out | then |
+|---|---|
+| band-specific and stable across seeds | the claim stands, on intervention evidence rather than weight inspection -- a stronger footing than the original framing had |
+| stable but **flat across bands** | the honest finding is that the model was given the freedom and largely declined to use it. That is a clean negative result about scale-specificity, and it is publishable as one |
+| near zero everywhere | the exogenous block is redundant conditioning, consistent with its taking 60-95% of head input variance for ~1% MAE. The spatial line closes |
 
 ## 13. Caveats
 
