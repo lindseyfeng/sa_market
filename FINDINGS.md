@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-25 12:46*
+*generated 2026-09-25 12:48*
 
 ## Summary
 
@@ -77,6 +77,10 @@ The decomposition is **lossless**, so no residual channel is needed and none can
 
 **6. Forecast.** The $K$ modes go to a 2-layer bidirectional LSTM with hidden size 128, then a $256 \rightarrow 128 \rightarrow 1$ head.
 
+![architecture](figures/architecture_nvmd_st.png)
+
+*`analysis/plot_architecture.py`, drawn from the code. The visual centre is the per-band coupling: one $R\times R$ matrix per frequency band, which is the part of this design the literature does not already contain (section 9).*
+
 ### What "fixed across windows" does and does not mean
 
 It does **not** mean the band parameters are untrained. It means they are **global model parameters**: learned through the forecast loss, but shared by every window. VMD re-solves a fresh set of modes for each window; this learns one set and applies it everywhere.
@@ -149,6 +153,10 @@ flowchart LR
 
 An earlier version let the mixed modes **replace** the target's own. That destroys the partition of unity -- reconstruction error 0.00 to 1.82, cross terms 2-6.5x the self term -- so the head never saw a faithful price encoding. It corrupted the DC and daily bands, which carry ~88% of ordinary intervals, while the fast bands gained real spike information. **MAE got worse while RMSE got better**, consistently. Section 9 has what the concat form is actually worth.
 
+![decomposed waves](figures/decomposed_waves.png)
+
+*One 48 h window of 2019, every band shown before and after coupling. The second panel is the argument: pre-coupling the modes sum to the input exactly, post-coupling they do not. Bands 2-4 -- trend, daily, half-daily -- are visibly rescaled, which is where the ordinary intervals live, while bands 6-8 pick up real spike structure at the right-hand edge. That is the MAE-worse/RMSE-better trade drawn out.*
+
 
 ## 4. Why the classical bands underperform: the physics, not the algorithm
 
@@ -175,6 +183,10 @@ This section is what makes the later null results legible. Swapping decompositio
 
 *Left: band centres over 300 consecutive windows. VMD re-solves and the centres wander -- 12.0% of a band gap per step, crossing half a gap in 30.8% of steps -- while the bank's are flat lines because they are written down once. Right: the period each band is tuned to. Everything in the shaded region is slower than the window itself, so it is a trend slot rather than an oscillation; VMD puts one band there and the bank two. Regenerate with `python3 -m report.plot_drift`.*
 These are properties of the **modes**, and every classical method we tested shares them. That is why sections 7, 8 and 10 come back empty: they vary the *algorithm* while the physics of the resulting bands stays put. The one comparison that does move the metric changes what the bands are.
+![interpretability](figures/interpretability_nvmd_vs_vmd.png)
+
+*Band structure, energy concentration, period coverage and per-mode ablation. Panel D is the one this project loses, and it is included deliberately: a reviewer will run that test.*
+
 
 ### The two constructions, side by side
 
@@ -228,7 +240,11 @@ Regenerate with `python3 -m report.plot_bands`.
 
 Yes on RMSE, robustly. On MAE only under a tail-insensitive objective, and the two arms cross. Both answers need VMD given its residual channel first, a correction worth more than the margin under test.
 
-**Figure: `figures/loss_sweep.png`** (`analysis/plot_loss_sweep.py`) is the clearest statement of this. Sliding the objective from L1 to MSE, the spatial arm moves 0.736 MAE and the baseline 0.281 -- a 2.6x steeper slope, which is what having $2K$ head inputs against $K{+}1$ buys the objective to reallocate. **The lines cross.** Under MSE the spatial arm is 0.108 *behind*; under L1 it is 0.347 ahead. Meanwhile the RMSE gap sits at a near-constant **~1.4, about 5%**, at every objective.
+![loss sweep](figures/loss_sweep.png)
+
+*`analysis/plot_loss_sweep.py`. L1 and MSE are the training-time names for MAE and RMSE: an L1-trained model optimises exactly the metric the left panel reports, which is why it sits lowest there.*
+
+This figure is the clearest statement of the result. Sliding the objective from L1 to MSE, the spatial arm moves 0.736 MAE and the baseline 0.281 -- a 2.6x steeper slope, which is what having $2K$ head inputs against $K{+}1$ buys the objective to reallocate. **The lines cross.** Under MSE the spatial arm is 0.108 *behind*; under L1 it is 0.347 ahead. Meanwhile the RMSE gap sits at a near-constant **~1.4, about 5%**, at every objective.
 
 So the honest summary is two statements, not one:
 
