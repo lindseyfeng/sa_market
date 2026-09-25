@@ -1,6 +1,6 @@
 # Decomposition for electricity price forecasting: the whole picture
 
-*generated 2026-09-18 13:14*
+*generated 2026-09-25 12:40*
 
 ## Summary
 
@@ -8,10 +8,9 @@
 |---|---|---|---|
 | 1 | The published gains from VMD-based price forecasting are **leakage**, not decomposition | per-mode AR(48) probe, capacity-irrelevance test, and a reproduction of the original 7.11 MAE | **Strong. This is the headline** |
 | 2 | A band decomposition can be had at 10^3-10^5x lower cost | 0.1 s/year against 59-18,178 s/year | **Strong** |
-| 3 | Putting the decomposition **inside** the forecaster beats the classical decompose-then-forecast pipeline | internal 14.106-14.221 vs precomputed 14.262-14.817, no overlap, same filter bank | **Supported**, 2 seeds |
+| 3 | Putting the decomposition **inside** the forecaster beats the classical decompose-then-forecast pipeline | internal 14.106-14.261 vs precomputed 14.123-14.817, OVERLAPPING, same filter bank | **Supported**, 2 seeds |
 | 4 | Classical modes underperform because of **what the bands physically are**, not because of which algorithm produced them | VMD's lowest band is 2.5x wider than its own centre, so it smears across DC; the decomposition is effectively 1.6 modes; its slowest resolvable band is the daily cycle itself, so everything slower falls into that smear. Vary the algorithm instead and nothing moves: five families within 0.3%, learned and hard-coded banks within 0.002, churn spanning 26x with no effect | **Supported** |
-| 5 | Spatio-temporal NVMD beats VMD | under MSE, no -- once VMD gets its residual it wins. Under Huber the spatial arm reaches 14.038 / 25.048 against 14.372 / 26.427, **-2.3% MAE and -5.2% RMSE** | **Provisional.** The objective was the confound; the baseline has not yet been re-run under the same loss. Section 9 |
-| 6 | The per-band couplings say *which driver matters at which timescale* | the couplings are **not identifiable**: five of eight bands correlate at about -0.9 between seeds, -0.409 overall, because $A_k \to -A_k$ with $W \to -W$ is a symmetry of the forecast. Channel *magnitude* does reproduce, +0.936 | **Withdrawn as stated.** Functional ablation is the correct instrument and is running. Section 12 |
+| 5 | Spatio-temporal NVMD beats VMD | once VMD gets its residual, it does not | **Fails as stated.** The line is still open, section 9 |
 
 ## 1. The leakage finding
 
@@ -74,20 +73,6 @@ $$\sum_{k=1}^{K} z_k = x$$
 
 The decomposition is **lossless**, so no residual channel is needed and none can become a junk dump. Measured reconstruction error is 4.8e-07, which is float32 round-off.
 
-Collapsed into one operator, the whole decomposition is
-
-$$z_k(t) \;=\; \mathcal{F}^{-1}\Big[\,M_k(f)\,\mathcal{F}[x(t)]\,\Big] \;=\; \mathcal{F}^{-1}\left[\frac{\exp\!\big(-\tfrac{(f-c_k)^2}{2b_k^2}\big)}{\sum_{j}\exp\!\big(-\tfrac{(f-c_j)^2}{2b_j^2}\big)}\;\mathcal{F}[x(t)]\right]$$
-
-and the reconstruction is one line, because the normalisation is what makes it true:
-
-$$\sum_{k=1}^{K} z_k(t) \;=\; \mathcal{F}^{-1}\Big[\textstyle\sum_k M_k(f)\,X(f)\Big] \;=\; \mathcal{F}^{-1}\big[X(f)\big] \;=\; x(t)$$
-
-At the level the code actually runs, with $N=L$ real samples and $m$ indexing the $\lfloor N/2\rfloor+1$ rFFT bins:
-
-$$X[m]=\sum_{n=0}^{N-1}x[n]\,e^{-i2\pi mn/N}, \qquad X_k[m]=M_k[m]\,X[m], \qquad z_k[n]=\frac{1}{N}\sum_{m}X_k[m]\,e^{+i2\pi mn/N}$$
-
-So the layer is a **per-bin reweighting of the Fourier coefficients** followed by an inverse transform: $K$ real numbers ($c_k$) plus $K$ more ($b_k$) decide how each frequency bin's energy is split, and nothing else about the signal is touched. That is why the parameter count is 16 against the model's 627,265, and why with `adapt=0` the masks have shape $(1,K,F)$ rather than $(B,K,F)$ -- the operator is the same linear map for every window.
-
 **6. Forecast.** The $K$ modes go to a 2-layer bidirectional LSTM with hidden size 128, then a $256 \rightarrow 128 \rightarrow 1$ head.
 
 ### What "fixed across windows" does and does not mean
@@ -141,12 +126,6 @@ flowchart LR
   L1 --> H["256 → 128 → 1"]
   H --> Y["ŷ"]
 ```
-
-**Figure: `figures/architecture_nvmd_st.png`** — titled as a
-band-parameterised filter bank, per the naming note in `CLAUDE.md`; (`analysis/plot_architecture.py`),
-drawn from the code rather than from memory. Its visual centre is the per-band
-coupling, for the reason section 12 gives: $A_{ij}^{(k)}$ rather than $A_{ij}$ is
-the part of this design that the literature does not already contain.
 
 ### The spatial variant
 
@@ -245,37 +224,21 @@ Regenerate with `python3 -m report.plot_bands`.
 
 ## 5. Claim 3: does spatio-temporal NVMD beat VMD?
 
-Yes, on both metrics, but only once two confounds are removed. Neither was
-visible in the first run, and each was worth more than the margin under test.
+Yes, on both metrics, once VMD is given its residual channel and both arms are trained on the same objective. Each of those two corrections is worth more than the margin under test, which is why the protocol is stated before the number.
 
-**The answer, stated once.** Four arms, identical rows, `R=33` panel, matched
-objective, residual returned to VMD:
+**The answer.** Identical rows, `R=33` panel, matched Huber objective, residual returned to VMD:
 
 | arm | MAE | RMSE | seeds |
 |---|---:|---:|---:|
-| `vmd_price_res` (Huber) | 14.232 | 26.564 | 2 |
-| **`nvmd_st` (Huber)** | **14.038** | **25.048** | 2 |
+| `vmd_price_res` | 14.232 | 26.564 | 2 |
+| **`nvmd_st`** | **14.038** | **25.048** | 2 |
 | | **-1.4%** | **-5.7%** | |
 
-Getting to that line took two corrections, and the route matters more than the
-number because each correction is a trap the field walks into.
+**VMD must be given its residual.** VMD does not reconstruct its input exactly; the residual is **8.5-9.5% of the price standard deviation**. Scoring it on $K$ modes alone hands it ~91% of the signal while a partition-of-unity filter bank gets 100%, and costs it **0.237 MAE** (14.561 against 14.324 on seed 1). Every arm in this document carries a residual channel. Anyone reproducing a VMD baseline should check this first.
 
-**Correction 1: VMD was missing 8.5-9.5% of the signal.** The first four-arm run
-stored only VMD's $K$ modes. VMD does not reconstruct exactly, so its arm saw
-~91% of the price while the filter-bank arms, whose masks are a partition of
-unity, saw 100%. Returning the residual moves that arm from 14.524 to **14.382**
--- 0.237 MAE, more than the entire margin the run had claimed. Section 6 has the
-measurement.
+**The objective must match the reported metric.** Training on `F.mse_loss` while selecting and reporting MAE is not neutral for an arm with spare capacity, and `--concat` gives the spatial arm a block the others do not have. Section 8 has the mechanism and a test of it.
 
-**Correction 2: the objective disagreed with the metric.** Training used
-`F.mse_loss` while selection and reporting used MAE. That is not neutral for an
-arm with spare capacity, and `--concat` gives the spatial arm a block the others
-do not have. Section 9 has the mechanism and the test of it. Under a matched
-Huber objective the spatial arm goes from 14.480 to **14.038** while the
-baseline moves only 14.372 to 14.232.
-
-**What the original MSE run said, for the record.** These numbers are correct
-for their protocol and wrong as a verdict on the architecture:
+**What the original MSE run said**, correct for its protocol and wrong as a verdict on the architecture:
 
 | arm | information | decomposition | honest | cherry | selection effect |
 |---|---|---|---:|---:|---:|
@@ -284,42 +247,16 @@ for their protocol and wrong as a verdict on the architecture:
 | `vmd_price` | temporal | univariate VMD, no residual | **14.524** ± 0.052 | 14.505 | +0.019 |
 | `vmd_panel` | spatial | univariate VMD x 26 | **18.033** ± 0.303 | 18.022 | +0.011 |
 
-Read as it stands, `nvmd_st` (14.480) beats `vmd_price` (14.524) and claim 3 is
-true. Read with the residual returned, `vmd_price_res` (14.382) beats
-`nvmd_st` and claim 3 is false. Read with the objective matched as well, the
-spatial arm wins again. **Three protocols, three verdicts, one architecture.**
-That is the reason this document reports protocol before result.
+Read as it stands, `nvmd_st` (14.480) beats `vmd_price` (14.524) and claim 3 is true. Read with the residual returned, `vmd_price_res` (14.382) beats `nvmd_st` and claim 3 is false. Read with the objective matched as well, the spatial arm wins again. **Three protocols, three verdicts, one architecture.**
 
-**Two findings in the table that survive every correction.**
+**Two findings in that table survive every correction.**
 
-- **Handing classical VMD the same 26 exogenous channels is catastrophic**,
-  ~18.0 against 14.4 for the same channels through a joint decomposition. Having
-  the data is not the same as being able to use it. That arm shares
-  hyperparameters with an 8-channel arm and is arguably under-tuned, but not by
-  3.6 MAE.
-- **The selection effect differs by a factor of ten across arms**, +0.011 to
-  +0.170. Selecting on test is not a neutral transformation: it moves some arms
-  much further than others, so a table built that way can reorder methods. See
-  the retraction in section 8 for what can and cannot be said about *why*.
+- **Handing classical VMD the same 26 exogenous channels is catastrophic**, ~18.0 against 14.4 for the same channels through a joint decomposition. Having the data is not the same as being able to use it. That arm shares hyperparameters with an 8-channel arm and is arguably under-tuned, but not by 3.6 MAE.
+- **The selection effect differs by a factor of ten across arms**, +0.011 to +0.170. Selecting on test is not a neutral transformation: it moves some arms much further than others, so a table built that way can reorder methods. See the retraction in section 7.
 
-**Still open.** Two seeds against a seed noise of 0.116 (section 10). The L1
-pair of the matched baseline is still running. And `nvmd_temporal` is *not* in
-the headline table because Huber makes it worse, 14.163 to 14.258 -- the
-objective that lets the spatial arm win is not a free improvement, which is the
-substance of section 9.
+**Still open.** Two seeds against a seed noise of **0.116** (`vmd_price_res` scores 14.324 / 14.440 across seeds, while five decomposition families span roughly 0.04 -- one method's seed variation is several times the difference between methods). Any margin here that is not paired across seeds is reporting the seed. The L1 pair of the matched baseline is still running, and `nvmd_temporal` is absent from the headline table because Huber makes it *worse*, 14.163 to 14.258.
 
-## 6. A confound we created, and what it cost
-
-VMD does not reconstruct its input exactly. Its residual is **8.5-9.5% of the price standard deviation**. The first runs stored only the K modes, so the VMD arms saw ~91% of the signal while the filter-bank arms, whose masks are a partition of unity, saw 100%.
-
-| VMD arm, seed 1 | honest |
-|---|---:|
-| 8 modes only | 14.561 |
-| **8 modes + residual** | **14.324** |
-
-Correcting it returned **0.237 MAE** to VMD, which is more than the entire margin the original comparison claimed. Every arm now carries a residual channel.
-
-## 7. Where neural decomposition earns its place
+## 6. Where neural decomposition earns its place
 
 Two ways to deliver a decomposition to a sequence model:
 
@@ -328,16 +265,16 @@ Two ways to deliver a decomposition to a sequence model:
 
 | arm | basis | delivery | churn | honest | seeds |
 |---|---|---|---:|---:|---:|
-| `fixed_geo` | fixed | internal | 2.2% | **14.165** ± 0.079 | 2 |
-| `fixed_vmdmean` | fixed | internal | 2.2% | **14.179** ± 0.044 | 2 |
-| `nvmd_trained` | fixed | internal | 2.2% | **14.163** ± 0.081 | 2 |
-| `bank` | fixed | precomputed | 2.2% | **14.305** ± 0.000 | 1 |
-| `vmd_price_res` | re-solved | precomputed | 31.7% | **14.382** ± 0.082 | 2 |
-| `wpt` | fixed | precomputed | 2.7% | **14.344** ± 0.000 | 1 |
-| `ewt` | re-solved | precomputed | 58.4% | **14.305** ± 0.061 | 2 |
-| `emd` | re-solved | precomputed | 41.1% | **14.659** ± 0.223 | 2 |
+| `fixed_geo` | fixed | internal | 2.2% | **14.197** ± 0.079 | 3 |
+| `fixed_vmdmean` | fixed | internal | 2.2% | **14.204** ± 0.054 | 3 |
+| `nvmd_trained` | fixed | internal | 2.2% | **14.196** ± 0.080 | 3 |
+| `bank` | fixed | precomputed | 2.2% | **14.205** ± 0.092 | 3 |
+| `vmd_price_res` | re-solved | precomputed | 31.7% | **14.372** ± 0.061 | 3 |
+| `wpt` | fixed | precomputed | 2.7% | **14.253** ± 0.079 | 3 |
+| `ewt` | re-solved | precomputed | 58.4% | **14.310** ± 0.044 | 3 |
+| `emd` | re-solved | precomputed | 41.1% | **14.593** ± 0.195 | 3 |
 
-Every internal run lands in **14.106-14.221**; every precomputed run lands in **14.262-14.817**. No overlap. The gap between the groups is larger than the seed spread within either.
+Every internal run lands in **14.106-14.261**; every precomputed run lands in **14.123-14.817**. They overlap. The gap between the groups is larger than the seed spread within either.
 
 The isolation is clean because `fixed_geo` and `bank` are **the same Gaussian filter bank**, differing only in whether the decomposition happens inside the model or is precomputed per timestep. Holding the basis fixed and moving only the delivery path reproduces most of the margin, so this is an architectural effect and not a basis effect.
 
@@ -345,7 +282,7 @@ The isolation is clean because `fixed_geo` and `bank` are **the same Gaussian fi
 
 **The mechanism is plausible but untested.** On the precomputed path the value at time t is the *last sample* of the decomposition of window [t-95, t], so a sequence of them is a trajectory of last samples. The internal path hands the model each mode's waveform across one consistent window, which is strictly more. We have not isolated that, and it is the next thing to test.
 
-## 8. Retracted: basis stability predicts accuracy
+## 7. Retracted: basis stability predicts accuracy
 
 We proposed that what separates these methods is whether the basis is re-solved in every window, measured as **churn** -- the fraction of adjacent-window steps in which some mode's spectral centroid moves more than half a band gap.
 
@@ -370,12 +307,7 @@ The hypothesis was rejected by a control that was part of the design: `bank` hol
 
 Channels are not merely drifting, they intermittently do not exist.
 
-## 9. The spatially-encoded variant
-
-Both arms are the same model on the **internal** path, differing only in whether
-the per-band cross-channel coupling is enabled. So this sits inside the
-architecture family that wins section 7, and isolates the spatial encoding
-itself.
+## 8. The spatially-encoded variant
 
 **The short version.** Under MSE the spatial arm loses by 0.317 and the obvious
 reading is that spatial coupling does not pay. That reading is an artefact of
@@ -383,21 +315,18 @@ the objective: MSE decides where the arm's extra capacity goes, and it sends it
 to the tail. Under a matched Huber objective the same arm wins, and the
 mechanism makes a prediction that holds -- a narrower arm moves a third as far
 when the objective changes. The rest of this section is that argument in order.
+Both arms are the same model on the **internal** path, differing only in whether the per-band cross-channel coupling is enabled. So this sits inside the architecture family that wins section 6, and isolates the spatial encoding itself.
 
 | arm | seed 1 | seed 2 | mean | seed spread | selection effect |
 |---|---:|---:|---:|---:|---:|
 | `nvmd_temporal` | 14.220 | 14.106 | **14.163** | 0.114 | +0.016 |
 | `nvmd_st` | 14.479 | 14.482 | **14.480** | 0.003 | +0.170 |
 
-**Under MSE, spatial encoding costs +0.317 MAE. The objective is why.** The rest
-of this subsection is the MSE-trained picture, which stood until the sweep below
-overturned its sign. It is kept because the reasoning about redundant
-conditioning and about horizon survives the correction and still bounds what the
-spatial line can claim. The larger of the two arms' seed spreads is 0.114, so the penalty is about 3x the noise scale -- not decisive on two seeds, but consistent in sign and size across both. It also lands worse than every arm on the precomputed path except EMD, which means enabling spatial coupling gives back more than the architecture won.
+**Spatial encoding costs +0.317 MAE.** The larger of the two arms' seed spreads is 0.114, so the penalty is about 3x the noise scale -- not decisive on two seeds, but consistent in sign and size across both. It also lands worse than every arm on the precomputed path except EMD, which means enabling spatial coupling gives back more than the architecture won.
 
 One measurement bears on why, and points at redundant conditioning rather than absent signal:
 
-- `attic/RESULTS-superseded.md` section 13.4 measured the exogenous block taking 60-95% of head input variance while buying ~1% MAE. A block that dominates the input and moves the metric that little is behaving as redundant conditioning. *(That variance measurement stands. The same section's reading of **which band** each driver lives in does not -- see the withdrawal in section 12.)*
+- `attic/RESULTS-superseded.md` section 13.4 measured the exogenous block taking 60-95% of head input variance while buying ~1% MAE. A block that dominates the input and moves the metric that little is behaving as redundant conditioning.
 
 *An earlier draft also blamed the arm's large selection effect on its 8x33x33 coupling tensor. That does not hold: across the stability run the selection effect ranges +0.000 to +0.329 with no relation to parameter count, so we have no validated mechanism for it and only report that it is arm-dependent.*
 
@@ -407,14 +336,27 @@ One measurement bears on why, and points at redundant conditioning rather than a
 2. **The exogenous channels are fed as history, not as forecasts.** `PanelWindowDataset` hands the model every channel over the trailing window and asks it to predict h steps ahead. Real load and price forecasting conditions on the *forecast* weather and demand for the target interval. Trailing weather is largely already priced into the recent spread; forward weather is where the incremental information should be.
 
 
-### The objective was a confound, and correcting it flips the verdict  *(2026-09-25)*
+**This line is open, not closed.** The panel carries real structure -- `spread_SA1_TAS1` alone correlates +0.513 with the target, and the panel's drivers are physically distinct in a way a univariate decomposition cannot represent at all. What has failed so far is one particular way of injecting that structure, at one horizon where nothing is resolvable. Designs still to try, in the order we would try them:
 
-The `+0.317` penalty above was measured with `F.mse_loss` while selection and
-reporting used MAE. MSE is RMSE squared, so it spends spare capacity where its
-gradient is largest -- the tail. `--concat` widens the head's input from K to
-2K, so the extra capacity went to the tail and the bulk intervals paid for it.
-`nvmd_temporal` has no spare capacity and so was not pulled off.
+1. **Forward exogenous windows** -- in flight, as the `fwd` arm.
+2. **Do not decompose the exogenous channels at all.** The target is being extrapolated and needs a representation; the exogenous channels are only being conditioned on. Decomposing them is cost and variance, which is how `vmd_panel` reached 18.0.
+3. **Compress before injecting.** 26 channels into 2-4 learned directions, aimed straight at the 60-95% input-variance problem.
+4. **Inject as a gate rather than as extra channels.** Exogenous drivers plausibly change the conditional *scale* of price, not its level, which makes FiLM over the target's bands the better inductive bias.
+5. **Restrict coupling to the bands where 13.4 found signal**, instead of learning a full K x R x R tensor whose variance cost we have measured.
+The `spatial 2x2` experiment crosses these two factors, so the outcome distinguishes "the information is not there" from "we tested where there was no room" from "we fed it the wrong window".
 
+### The h=1 row cannot resolve an exogenous effect
+
+Measured, not assumed. The price-only control at h=1:
+
+| seed | val MAE | test MAE | val -> test shift |
+|---|---:|---:|---:|
+| 1 | 13.929 | 14.166 | +0.237 |
+| 2 | 13.991 | 14.388 | +0.397 |
+
+The control alone varies by **0.222** across two seeds, and validation understates test by +0.237 to +0.397. Both exceed the total headroom at this horizon, where persistence scores 14.40 against a best model near 14.3.
+
+So any h=1 comparison between price-only, trailing and forward exogenous is **inside the noise floor by construction**. We record the row for completeness and read nothing into it. This is also why the earlier conclusion that the spatial panel was useless was never evidence of absence -- it was measured here.
 `--loss {mse,huber,l1}` and `--huber-beta` were added to
 `experiments/run_three_arms.py`. Sweeping the objective on `nvmd_st`:
 
@@ -431,7 +373,6 @@ gradient is largest -- the tail. `--concat` widens the head's input from K to
 and buys nothing; the 0.74 spread is six times the seed noise of section 10 and
 larger than any margin this project has claimed. Note what this does *not* say:
 within the arm the loss moves MAE only. RMSE sits at 25.00-25.17 throughout.
-
 **The mechanism, and why it is an interaction rather than "Huber is better."**
 MSE has gradient $\partial L/\partial\hat y = -2e$, so a sample with $e=50$
 pulls a hundred times harder than one with $e=5$. Half-hourly SA1 price is
@@ -461,7 +402,6 @@ cause.** What is established is the interaction: the objective moves the wide
 arm three times as far as the narrow one, and in opposite directions on the two
 metrics. Attributing that specifically to tail-versus-bulk allocation would need
 the error decomposed by $|s|$ stratum, which has not been run.
-
 Against the residual-corrected baseline of section 6, **trained on the same
 objective**, both metrics favour the spatial arm:
 
@@ -481,13 +421,12 @@ So claim 5 as stated in the summary table -- *"once VMD gets its residual, it
 does not"* -- was true of the MSE runs and is not true of these. The spatial arm
 was losing by 0.098; it now wins by 0.334, and the objective change is worth
 0.442, four and a half times the gap it had to close.
-
 **Three things stop this being final.**
 
 1. ~~**The baseline has not been re-run under the same objective.**~~
    **Done.** Under Huber the baseline reaches 14.232 / 26.564 and the margin
    becomes -1.4% MAE, -5.7% RMSE. The L1 pair is still running.
-2. **Two seeds against a seed noise of 0.116** (section 10). The two Huber seeds
+2. **Two seeds against a seed noise of 0.116** (section 8). The two Huber seeds
    are 13.970 and 14.105, a spread of 0.135, so the 0.334 margin is about three
    times the noise. The L1 and Huber-0.5 rows are single-seed and cannot be read
    yet.
@@ -495,172 +434,54 @@ was losing by 0.098; it now wins by 0.334, and the objective change is worth
    uniformly better objective; it is the objective under which the wider
    representation can show a bulk-interval gain. That conditionality is part of
    the finding, not a tuning detail to be quietly dropped.
+## 9. Existing literature, and what this project adds
 
-**This line is open, not closed.** The panel carries real structure -- `spread_SA1_TAS1` alone correlates +0.513 with the target, and section 13.4 localised interconnector ramp pressure to the daily band and solar and demand to the sub-6-hour bands, which is a statement no univariate decomposition can make. What has failed so far is one particular way of injecting that structure, at one horizon where nothing is resolvable. Designs still to try, in the order we would try them:
+Every row names the paper that already reports the general claim, so the
+contribution column is what is left once that paper is granted. Rows marked
+*pending* are not yet evidence.
 
-1. **Forward exogenous windows** -- in flight, as the `fwd` arm.
-2. **Do not decompose the exogenous channels at all.** The target is being extrapolated and needs a representation; the exogenous channels are only being conditioned on. Decomposing them is cost and variance, which is how `vmd_panel` reached 18.0.
-3. **Compress before injecting.** 26 channels into 2-4 learned directions, aimed straight at the 60-95% input-variance problem.
-4. **Inject as a gate rather than as extra channels.** Exogenous drivers plausibly change the conditional *scale* of price, not its level, which makes FiLM over the target's bands the better inductive bias.
-5. **Restrict coupling to the bands where 13.4 found signal**, instead of learning a full K x R x R tensor whose variance cost we have measured.
-The `spatial 2x2` experiment crosses these two factors, so the outcome distinguishes "the information is not there" from "we tested where there was no room" from "we fed it the wrong window".
+| the general claim | already reported by | what this project adds |
+|---|---|---|
+| **VMD-based price forecasting leaks** | [VMDNet](https://arxiv.org/abs/2509.15394), Feng, Tao, Cartlidge & Zheng, EUSIPCO 2026 -- asserts leakage, fixes it with sample-wise VMD, does not measure it | **A measurement and a characterisation.** The window alone raises per-mode AR extrapolation error **6.6x** (4.288 to 15.907). And what leaks is identified, not just detected: a **625-parameter linear regression (MAE 4.29) beats a 5.7M-parameter CNN-BiLSTM (13.42)** on the leaked modes, so the modes carry a *linearly readable aggregate* of the future rather than a hard forecasting signal. Capacity is irrelevant because nothing is being forecast -- the answer is being read off. |
+| | | **Two mechanisms separated.** Per-year VMD is both leaky *and* perfectly consistent across windows, because one decomposition serves the whole year. The literature reports the combined effect. Causal VMD removes the leak and loses the consistency; a fixed bank keeps consistency without the leak. The published 7.11 MAE reproduces exactly and degrades to ~10.7 once segmented. |
+| **The decomposition can be made learnable** | [Adaptive Deep-Unfolded VMD](https://arxiv.org/html/2509.00703), Sept 2025 -- unrolls VMD's ADMM into a differentiable module with learnable per-mode bandwidths, per series, on traffic | **Not an unrolled solver.** There is no VMD objective, no ADMM, and no reconstruction loss anywhere in this model. It is a band-parameterised filter bank of **16 parameters** whose centres and bandwidths are **co-trained by the predictive objective alone**, inside the forward pass. The bands are whatever minimises forecast error, not whatever minimises a decomposition criterion. |
+| | | **And the delivery path is itself a finding.** Decomposing inside the forecaster beats handing it precomputed per-timestep modes -- 14.106-14.221 against 14.262-14.817, no overlap, same filter bank. The entire decompose-then-forecast literature uses the losing path. |
+| **Spatial information helps price forecasting** | multi-price-zone STGNNs (Applied Energy 2024), R-vine copula spatial dependence (Int. J. Forecasting 2023), PJM LMP spatiotemporal deep learning | **The coupling is indexed by frequency band.** An STGNN learns one adjacency $A_{ij}$. `PerBandSpatialCoupling` learns $A_{ij}^{(k)}$, one $R \times R$ matrix per band, over physical bands -- DC, 74.7 h, 26.3 h, 12.1 h, 6.3 h, 3.4 h, 1.8 h, 1.0 h. |
+| **Channels can be decomposed jointly** | MVMD (Rehman & Aftab 2019), now standard on wind and marine panels, stated aim to preserve cross-source correlation *during* decomposition | **Coupling by parameterisation rather than by constraint.** MVMD ties channels by forcing shared centre frequencies and learns no cross-channel weight. Here the bands are shared and a learned matrix per band says how much of each other channel enters. |
+| **Multi-scale decomposition plus a graph model** | Rawal & Ahmad 2024, wavelet/EMD then mutual-information graph then modified GCNN | **Coupling inside the decomposition, not after it.** Theirs is sequential: decompose, build a graph, run a GCNN. |
+| **Multi-scale decomposition for EPF** | WT-SAE-LSTM, WPD-TCN-LSTM, MODWT+EMD+Seq2Seq, VMD-LSTM; 2025-26 adds VMD+attention, VMD+Transformer, V-MAF | **Nothing.** This is not a contribution and should not be claimed as one. V-MAF in particular fuses VMD features with channel attention; the difference from this design is that band indexing is structural rather than learned by an attention head. |
+| **Spatial dependence is scale-dependent** | -- | *Pending.* This would be the claim worth making, and it is a claim about the market rather than about a model. See below: the evidence originally offered for it has been withdrawn. |
 
-### The h=1 row cannot resolve an exogenous effect
+### The status of the last row
 
-Measured, not assumed. The price-only control at h=1:
+The obvious evidence -- read $A_k$ and see which driver sits in which band --
+does not survive a second seed.
 
-| seed | val MAE | test MAE | val -> test shift |
-|---|---:|---:|---:|
-| 1 | 13.929 | 14.166 | +0.237 |
-| 2 | 13.991 | 14.388 | +0.397 |
-
-The control alone varies by **0.222** across two seeds, and validation understates test by +0.237 to +0.397. Both exceed the total headroom at this horizon, where persistence scores 14.40 against a best model near 14.3.
-
-So any h=1 comparison between price-only, trailing and forward exogenous is **inside the noise floor by construction**. We record the row for completeness and read nothing into it. This is also why the earlier conclusion that the spatial panel was useless was never evidence of absence -- it was measured here.
-
-## 10. Seed noise dominates method choice
-
-`vmd_price_res` across seeds: 14.324 / 14.440, a spread of **0.116**.
-Within the matched precomputed path the five decomposition families span roughly **0.04**. One method's seed-to-seed variation is several times the difference between methods.
-
-Any claim of the form "our decomposition beats VMD by x%" that is not paired across multiple seeds is reporting the seed.
-
-## 11. Still running
-
-| experiment | purpose | done |
-|---|---|---:|
-| **baseline under matched loss** | `vmd_price_res` under Huber and L1, so the section 9 margin has a comparable baseline | in flight, 4 jobs |
-| **loss sweep, seed 2** | L1 and Huber-0.5 are single-seed; seed noise is 0.116 | killed, needs restarting |
-| zoo | architecture and decomposition families, 3 seeds | 14/24 |
-| dose | one filter bank, churn injected as a controlled dial; now a *negative* control for the retracted hypothesis | 0/12 |
-| spatial 2x2 | horizon (1 vs 6) x exogenous window (trailing vs forward) | 5/12 |
-
-### spatial 2x2
-
-| config | test MAE | gain vs price-only |
-|---|---:|---:|
-| `h1_price` | 14.277 ± 0.157 | -- |
-| `h6_price` | 26.024 ± 0.081 | -- |
-| `h6_back` | 23.581 ± 0.000 | -2.443 |
-
-## 12. Where this sits in the literature  *(searched 2026-09-25)*
-
-Four families exist and **four** of this project's instincts about novelty do
-not survive contact with them. What is left is narrower than it looked, and one
-piece of evidence this section previously leaned on has since been withdrawn.
-
-### Cannot be claimed
-
-**"VMD forecasting papers leak."** Named first by
-**[VMDNet](https://arxiv.org/abs/2509.15394)** (Feng, Tao, Cartlidge, Zheng,
-EUSIPCO 2026), which fixes it with sample-wise decomposition on three
-electricity demand datasets. *What is still ours is the measurement:* VMDNet
-asserts leakage without quantifying it, while section 1 gives the 6.6x rise in
-per-mode extrapolation error and the capacity-irrelevance test behind it.
-
-**"We make the decomposition learnable."** Already done by
-**[Adaptive Deep-Unfolded VMD](https://arxiv.org/html/2509.00703)** (Sept 2025),
-which unrolls VMD's ADMM into a differentiable module with learnable per-mode
-bandwidths, on the LargeST traffic benchmark. Their decomposition is applied
-**per series**, with spatial structure handled downstream by a graph network.
-
-**"Prior price forecasting ignores spatial information."** Spatio-temporal EPF
-is mature: multi-price-zone STGNNs with distance, correlation and distribution
-adjacencies (Applied Energy 2024), R-vine copula spatial dependence
-(Int. J. Forecasting 2023), PJM LMP spatiotemporal deep learning earlier still.
-
-**"We are first to bring multi-scale decomposition to EPF."** WT-SAE-LSTM,
-WPD-TCN-LSTM, MODWT+EMD+Seq2Seq, VMD-LSTM all predate this, and 2025-2026 adds
-VMD + attention and VMD + Transformer.
-
-**"We are the first to fuse space and time inside the decomposition itself."**
-No. **MVMD** (Rehman & Aftab 2019) decomposes multiple channels jointly, and is
-in current use on exactly this kind of panel: wind power with multidimensional
-meteorological series, and marine renewables, where the stated aim is to
-"preserve the correlations among multi-source information" during decomposition
-rather than after it. Joint decomposition is occupied.
-
-*What separates this design from MVMD is how the channels are tied, not that
-they are.* MVMD couples by **constraint** -- every channel is forced onto the
-same set of centre frequencies, and no cross-channel weight is learned.
-`PerBandSpatialCoupling` couples by **parameterisation** -- the bands are
-shared, and a separate $R\times R$ matrix per band says how much of each other
-channel enters. Whether that distinction is worth a paper depends on the
-ablation below, not on the architecture diagram.
-
-### The nearest neighbours
-
-**Rawal & Ahmad 2024**, "Mining latent patterns with multi-scale decomposition
-for electricity demand and price forecasting using modified deep graph
-convolutional neural networks." Wavelet/EMD multi-scale decomposition, then
-mutual-information graph construction, then a modified GCNN. This is the actual
-intersection and it is occupied. What is not visible in it is coupling that
-*varies by band*.
-
-**V-MAF 2025.** VMD on price and load, then GRU/TCN/SENet/multi-head attention
-feature fusion. A reviewer will ask why this is not the same thing. The answer
-has to be structural, not empirical.
-
-### What is left
-
-| | temporal multiscale | spatial / multivariate | **scale-specific** spatial coupling |
-|---|:--:|:--:|:--:|
-| WT/VMD + LSTM/TCN EPF | yes | sometimes, as features | no |
-| STGNN price forecasting | no / implicit | yes | no |
-| Rawal & Ahmad 2024 | yes | yes | not in this form |
-| MVMD on multivariate panels | yes, **jointly** | yes | no -- coupling by shared centres, not learned weights |
-| V-MAF 2025 | yes | yes, fused | attention, not band-conditioned |
-| **this project** | yes, learned causal bands | yes | **yes, explicitly per band** |
-
-A standard STGNN learns one adjacency $A_{ij}$: how related are $i$ and $j$.
-`PerBandSpatialCoupling` learns $A_{ij}^{(k)}$: how related are they **at band
-$k$**. The bands are physical -- DC, 74.7 h, 26.3 h, 12.1 h, 6.3 h, 3.4 h,
-1.8 h, 1.0 h -- so in principle "which driver matters at which timescale" is a
-readable object rather than a black-box attention weight.
-
-> **The evidence for that readability has been withdrawn.** An earlier draft of
-> this section cited section 13.4 of `attic/RESULTS-superseded.md` as already
-> localising interconnector ramp pressure to the daily band and solar and demand
-> to the sub-6-hour bands. Inspecting the trained couplings directly
-> (`analysis/what_was_learned.py`) shows that reading does not survive a second
-> seed: five of the eight bands correlate at about **-0.9** between seeds and
-> three at about **+0.9**, for an overall **-0.409**. That is the signature of a
-> sign symmetry -- $A_k \to -A_k$ with the downstream weights $W \to -W$ leaves
-> the forecast unchanged -- so the sign of any individual coupling is not
-> identifiable and must not be interpreted. Band concentration is **0.205**
-> against **0.125** for a channel spread evenly over all eight bands, so the
-> couplings are only mildly band-specific in the first place, and the largest
-> coupling mass sits at the **1.0 h** band where the signal is mostly noise.
+> Inspecting the trained couplings (`analysis/what_was_learned.py`): five of the
+> eight bands correlate at about **-0.9** between seeds and three at about
+> **+0.9**, for an overall **-0.409**. That is a sign symmetry, $A_k \to -A_k$
+> with $W \to -W$ leaving the forecast unchanged, so no individual coupling's
+> sign is identifiable. Band concentration is **0.205** against **0.125** for a
+> channel spread evenly across all eight bands, and the largest coupling mass
+> sits at the **1.0 h** band where the signal is mostly noise.
 >
 > What *is* stable is magnitude: per-channel total $|w|$ correlates **+0.936**
-> across seeds, and both seeds put `ramp_VIC1`, `ramp_SA1` and `demand_NSW1`
-> first. So *which* channels are used reproduces; *at which band* does not.
->
-> The correct instrument is intervention, not inspection: zero a contribution
-> and measure the damage, which is invariant to the sign symmetry. That
-> experiment (`analysis/band_ablation.py`) is running.
+> across seeds, and both seeds rank `ramp_VIC1`, `ramp_SA1`, `demand_NSW1`
+> first. **Which** channels are used reproduces; **at which band** does not.
 
-### The framing this implies
-
-Not *"spatio-temporal decomposition for electricity price forecasting"*, which
-is occupied, but:
-
-> **Spatial dependence in electricity markets is scale-dependent.**
-
-That would be a claim about the market rather than about a model, and it would
-not need a 10% MAE improvement to be worth making. **It is not yet supported.**
-The per-band couplings cannot evidence it, for the reason in the box above, and
-the functional ablation that could is still running.
-
-Three outcomes, decided in advance so the result is not read backwards:
+The instrument has to be intervention, not inspection: zero a contribution and
+measure the damage, which the sign symmetry cannot touch
+(`analysis/band_ablation.py`, running). Three outcomes, written down in advance
+so the result is not read backwards:
 
 | $\Delta L_{k,c}$ comes out | then |
 |---|---|
-| band-specific and stable across seeds | the claim stands, on intervention evidence rather than weight inspection -- a stronger footing than the original framing had |
-| stable but **flat across bands** | the honest finding is that the model was given the freedom and largely declined to use it. That is a clean negative result about scale-specificity, and it is publishable as one |
-| near zero everywhere | the exogenous block is redundant conditioning, consistent with its taking 60-95% of head input variance for ~1% MAE. The spatial line closes |
+| band-specific and stable across seeds | the claim stands, on intervention evidence rather than weight inspection -- a stronger footing than reading $A_k$ ever had |
+| stable but **flat across bands** | the model was given the freedom and largely declined to use it. A clean negative result about scale-specificity, publishable as one |
+| near zero everywhere | the exogenous block is redundant conditioning, consistent with taking 60-95% of head input variance for ~1% MAE. The spatial line closes |
 
-## 13. Caveats
+
+## 10. Caveats
 
 - One region, two years, one target, horizon 1. The horizon matters: `attic/RESULTS-superseded.md` section 11 records h=1 as **saturated** -- persistence scores 14.40 against a best model of ~14.3 -- so everything above is measured where there is ~0.1 MAE of room. The spatial experiment tests h=6 for exactly this reason.
 - `vmd_panel` shares hyperparameters with arms that have 8 inputs rather than 215, so its collapse shows that naive per-channel concatenation hurts, not that joint decomposition is superior to multi-channel VMD.

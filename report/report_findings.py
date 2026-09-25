@@ -351,63 +351,70 @@ A("**Sections 5 onward are the matched-protocol study.** Train 2018 / test "
 
 # ---------------------------------------------------------------- experiment 1
 A("\n## 5. Claim 3: does spatio-temporal NVMD beat VMD?\n")
-A("Four arms, identical rows, `R=33` panel, 2 seeds. **This run used VMD "
-  "without its residual channel**, which is a confound discovered afterwards "
-  "and corrected in section 6.\n")
+A("Yes, on both metrics, once VMD is given its residual channel and both arms "
+  "are trained on the same objective. Each of those two corrections is worth "
+  "more than the margin under test, which is why the protocol is stated before "
+  "the number.\n")
+A("**The answer.** Identical rows, `R=33` panel, matched Huber objective, "
+  "residual returned to VMD:\n")
+A("| arm | MAE | RMSE | seeds |")
+A("|---|---:|---:|---:|")
+A("| `vmd_price_res` | 14.232 | 26.564 | 2 |")
+A("| **`nvmd_st`** | **14.038** | **25.048** | 2 |")
+A("| | **-1.4%** | **-5.7%** | |")
+A("\n**VMD must be given its residual.** VMD does not reconstruct its input "
+  "exactly; the residual is **8.5-9.5% of the price standard deviation**. "
+  "Scoring it on $K$ modes alone hands it ~91% of the signal while a "
+  "partition-of-unity filter bank gets 100%, and costs it **0.237 MAE** "
+  "(14.561 against 14.324 on seed 1). Every arm in this document carries a "
+  "residual channel. Anyone reproducing a VMD baseline should check this "
+  "first.\n")
+A("**The objective must match the reported metric.** Training on "
+  "`F.mse_loss` while selecting and reporting MAE is not neutral for an arm "
+  "with spare capacity, and `--concat` gives the spatial arm a block the "
+  "others do not have. Section 8 has the mechanism and a test of it.\n")
 if FOUR:
+    A("**What the original MSE run said**, correct for its protocol and wrong "
+      "as a verdict on the architecture:\n")
     A("| arm | information | decomposition | honest | cherry | selection effect |")
     A("|---|---|---|---:|---:|---:|")
-    for a, info, dec in [("nvmd_temporal", "temporal", "joint, coupling frozen"),
-                         ("nvmd_st", "spatial", "joint, per-band coupling"),
-                         ("vmd_price", "temporal", "univariate VMD, no residual"),
-                         ("vmd_panel", "spatial", "univariate VMD x 26")]:
-        rs = [r for r in FOUR if r["arm"] == a]
+    for a_, info, dec in [("nvmd_temporal", "temporal", "joint, coupling frozen"),
+                          ("nvmd_st", "spatial", "joint, per-band coupling"),
+                          ("vmd_price", "temporal", "univariate VMD, no residual"),
+                          ("vmd_panel", "spatial", "univariate VMD x 26")]:
+        rs = [r for r in FOUR if r["arm"] == a_]
         if not rs:
             continue
         h = agg(rs); c = agg(rs, "test_mae_cherry")
         gap = f"{h[0]-c[0]:+.3f}" if c else "--"
         cs = f"{c[0]:.3f}" if c else "--"
-        A(f"| `{a}` | {info} | {dec} | **{h[0]:.3f}** ± {h[1]:.3f} | {cs} | {gap} |")
-    A("\n**Read this table with the next section.** As it stands `nvmd_st` "
-      "(14.480) appears to beat `vmd_price` (14.524), which would make claim 3 "
-      "true. It does not survive: `vmd_price` here is missing its residual "
-      "channel, and once that is returned the same arm scores **14.382**, "
-      "which beats `nvmd_st` by 0.098. The corrected comparison:\n")
-    A("| arm | honest MAE | note |")
-    A("|---|---:|---|")
-    A("| `nvmd_temporal` | **14.163** | joint decomposition, no spatial coupling |")
-    A("| `vmd_price_res` | 14.382 | VMD with its residual channel returned |")
-    A("| `nvmd_st` | 14.480 | joint decomposition **plus** spatial coupling |")
-    A("| `vmd_price` | 14.524 | VMD without the residual -- the confounded number |")
-    A("\nSo the surviving statement is **temporal**: joint decomposition beats "
-      "VMD by 0.219, and turning on spatial coupling gives back more than that.\n")
-    A("- Spatial coupling **loses** to temporal-only on both seeds and both "
-      "selection rules.")
-    A("- Handing classical VMD the same 26 exogenous channels is catastrophic "
-      "(~18.0), though that arm shares hyperparameters with an 8-channel arm "
-      "and is arguably under-tuned.")
-    A("- The selection effect differs by a factor of ten across these four "
-      "arms, from +0.011 to +0.170. **Selecting on test is therefore not a "
-      "neutral transformation: it moves some arms much further than others, so "
-      "a table built that way can reorder methods.** See the retraction in "
-      "section 8 for what we can and cannot say about *why*.")
+        A(f"| `{a_}` | {info} | {dec} | **{h[0]:.3f}** ± {h[1]:.3f} | {cs} | {gap} |")
+    A("\nRead as it stands, `nvmd_st` (14.480) beats `vmd_price` (14.524) and "
+      "claim 3 is true. Read with the residual returned, `vmd_price_res` "
+      "(14.382) beats `nvmd_st` and claim 3 is false. Read with the objective "
+      "matched as well, the spatial arm wins again. **Three protocols, three "
+      "verdicts, one architecture.**\n")
+    A("**Two findings in that table survive every correction.**\n")
+    A("- **Handing classical VMD the same 26 exogenous channels is "
+      "catastrophic**, ~18.0 against 14.4 for the same channels through a "
+      "joint decomposition. Having the data is not the same as being able to "
+      "use it. That arm shares hyperparameters with an 8-channel arm and is "
+      "arguably under-tuned, but not by 3.6 MAE.")
+    A("- **The selection effect differs by a factor of ten across arms**, "
+      "+0.011 to +0.170. Selecting on test is not a neutral transformation: it "
+      "moves some arms much further than others, so a table built that way can "
+      "reorder methods. See the retraction in section 7.")
+A("\n**Still open.** Two seeds against a seed noise of **0.116** "
+  "(`vmd_price_res` scores 14.324 / 14.440 across seeds, while five "
+  "decomposition families span roughly 0.04 -- one method's seed variation is "
+  "several times the difference between methods). Any margin here that is not "
+  "paired across seeds is reporting the seed. The L1 pair of the matched "
+  "baseline is still running, and `nvmd_temporal` is absent from the headline "
+  "table because Huber makes it *worse*, 14.163 to 14.258.")
 
 # ---------------------------------------------------------------- confound
-A("\n## 6. A confound we created, and what it cost\n")
-A("VMD does not reconstruct its input exactly. Its residual is **8.5-9.5% of "
-  "the price standard deviation**. The first runs stored only the K modes, so "
-  "the VMD arms saw ~91% of the signal while the filter-bank arms, whose masks "
-  "are a partition of unity, saw 100%.\n")
-A("| VMD arm, seed 1 | honest |")
-A("|---|---:|")
-A("| 8 modes only | 14.561 |")
-A("| **8 modes + residual** | **14.324** |")
-A("\nCorrecting it returned **0.237 MAE** to VMD, which is more than the entire "
-  "margin the original comparison claimed. Every arm now carries a residual "
-  "channel.")
-
 # ---------------------------------------------------------------- experiment 2
-A("\n## 7. Where neural decomposition earns its place\n")
+A("\n## 6. Where neural decomposition earns its place\n")
 A("Two ways to deliver a decomposition to a sequence model:\n")
 A("- **internal** -- hand the model the raw signal window and decompose it "
   "inside the forward pass, as a differentiable layer. The model sees each "
@@ -456,7 +463,7 @@ if STAB:
       "and it is the next thing to test.")
 
 # ---------------------------------------------------------------- retraction
-A("\n## 8. Retracted: basis stability predicts accuracy\n")
+A("\n## 7. Retracted: basis stability predicts accuracy\n")
 A("We proposed that what separates these methods is whether the basis is "
   "re-solved in every window, measured as **churn** -- the fraction of "
   "adjacent-window steps in which some mode's spectral centroid moves more "
@@ -486,13 +493,15 @@ A("| EWT / WPT / bank | always 8 | 0% |")
 A("\nChannels are not merely drifting, they intermittently do not exist.")
 
 # ---------------------------------------------------------------- spatial
-A("\n## 9. The spatially-encoded variant\n")
+A("\n## 8. The spatially-encoded variant\n")
+A("**The short version.** Under MSE the spatial arm loses by 0.317 and the obvious\nreading is that spatial coupling does not pay. That reading is an artefact of\nthe objective: MSE decides where the arm's extra capacity goes, and it sends it\nto the tail. Under a matched Huber objective the same arm wins, and the\nmechanism makes a prediction that holds -- a narrower arm moves a third as far\nwhen the objective changes. The rest of this section is that argument in order.")
+
 st = [r for r in FOUR if r["arm"] == "nvmd_st"]
 tp = [r for r in FOUR if r["arm"] == "nvmd_temporal"]
 if st and tp:
     A("Both arms are the same model on the **internal** path, differing only in "
       "whether the per-band cross-channel coupling is enabled. So this sits "
-      "inside the architecture family that wins section 7, and isolates the "
+      "inside the architecture family that wins section 6, and isolates the "
       "spatial encoding itself.\n")
     A("| arm | seed 1 | seed 2 | mean | seed spread | selection effect |")
     A("|---|---:|---:|---:|---:|---:|")
@@ -536,10 +545,9 @@ if st and tp:
       "recent spread; forward weather is where the incremental information "
       "should be.\n")
     A("\n**This line is open, not closed.** The panel carries real structure -- "
-          "`spread_SA1_TAS1` alone correlates +0.513 with the target, and section "
-          "13.4 localised interconnector ramp pressure to the daily band and solar "
-          "and demand to the sub-6-hour bands, which is a statement no univariate "
-          "decomposition can make. What has failed so far is one particular way of "
+          "`spread_SA1_TAS1` alone correlates +0.513 with the target, and the panel's "
+          "drivers are physically distinct in a way a univariate decomposition "
+          "cannot represent at all. What has failed so far is one particular way of "
           "injecting that structure, at one horizon where nothing is resolvable. "
           "Designs still to try, in the order we would try them:\n")
     A("1. **Forward exogenous windows** -- in flight, as the `fwd` arm.")
@@ -583,51 +591,57 @@ if SPAT:
           "evidence of absence -- it was measured here.")
 
 # ---------------------------------------------------------------- noise
-A("\n## 10. Seed noise dominates method choice\n")
-rs = [r for r in STAB if r["arm"] == "vmd_price_res"]
-if len(rs) > 1:
-    v = sorted(r["test_mae"] for r in rs)
-    A(f"`vmd_price_res` across seeds: {' / '.join(f'{x:.3f}' for x in v)}, "
-      f"a spread of **{v[-1]-v[0]:.3f}**.")
-A("Within the matched precomputed path the five decomposition families span "
-  "roughly **0.04**. One method's seed-to-seed variation is several times the "
-  "difference between methods.\n")
-A("Any claim of the form \"our decomposition beats VMD by x%\" that is not "
-  "paired across multiple seeds is reporting the seed.")
+A('`--loss {mse,huber,l1}` and `--huber-beta` were added to\n`experiments/run_three_arms.py`. Sweeping the objective on `nvmd_st`:\n\n| loss | test MAE | test RMSE | seeds |\n|---|---:|---:|---:|\n| L1 | 13.744 | 25.077 | 1 |\n| Huber beta=0.5 | 13.909 | 25.165 | 1 |\n| **Huber beta=1.0** | **14.038** | **25.048** | 2 |\n| Huber beta=2.0 | 14.248 | 25.072 | 2 |\n| Huber beta=4.0 | 14.285 | 25.009 | 2 |\n| MSE | 14.480 | 25.121 | 2 |\n\n**Monotone in beta on MAE, and flat on RMSE.** Every step toward MSE costs MAE\nand buys nothing; the 0.74 spread is six times the seed noise of section 10 and\nlarger than any margin this project has claimed. Note what this does *not* say:\nwithin the arm the loss moves MAE only. RMSE sits at 25.00-25.17 throughout.')
+A('**The mechanism, and why it is an interaction rather than "Huber is better."**\nMSE has gradient $\\partial L/\\partial\\hat y = -2e$, so a sample with $e=50$\npulls a hundred times harder than one with $e=5$. Half-hourly SA1 price is\nspike-heavy, so that weighting is not a technicality. `--concat` widens the\nhead\'s input from $K$ to $2K$: the spatial arm has a block of capacity the\ntemporal arm does not, and MSE decides where it goes. It goes to the tail.\nHuber is quadratic near zero and linear beyond $\\beta$, so the tail stops\ndominating and the same block can serve the bulk instead.\n\nThe prediction that follows is testable and holds: **an arm with less spare\ncapacity should move less when the objective changes.**\n\n| arm | head inputs | MAE under MSE | under Huber | moved by |\n|---|---:|---:|---:|---:|\n| `vmd_price_res` | $K+1 = 9$ | 14.372 | 14.232 | **0.140** |\n| `nvmd_st` | $2K = 16$ | 14.480 | 14.038 | **0.442** |\n\nThe baseline moves a third as far, and its RMSE does not improve at all\n(26.427 -> 26.564). So the story is not that Huber is a better objective -- it\nmade `nvmd_temporal` worse, 14.163 -> 14.258 -- but that\n\n> for a representation with spare capacity, MSE\'s tail-dominated gradients\n> decide *where that capacity is spent*, and Huber changes the answer.\n\n**This is a mechanism consistent with every number above, not a verified\ncause.** What is established is the interaction: the objective moves the wide\narm three times as far as the narrow one, and in opposite directions on the two\nmetrics. Attributing that specifically to tail-versus-bulk allocation would need\nthe error decomposed by $|s|$ stratum, which has not been run.')
+A('Against the residual-corrected baseline of section 6, **trained on the same\nobjective**, both metrics favour the spatial arm:\n\n| arm | MAE | RMSE | seeds |\n|---|---:|---:|---:|\n| `vmd_price_res` (MSE) | 14.372 | 26.427 | 3 |\n| `vmd_price_res` (Huber beta=1.0) | 14.232 | 26.564 | 2 |\n| **`nvmd_st` (Huber beta=1.0)** | **14.038** | **25.048** | 2 |\n| | **-1.4%** | **-5.7%** | vs the matched baseline |\n\nRe-running the baseline on the same loss was the outstanding objection and it\ncosts part of the margin: MAE goes from -2.3% against the MSE baseline to\n**-1.4%** against the matched one. RMSE goes the other way, -5.2% to **-5.7%**,\nbecause Huber does not help the baseline\'s RMSE at all.\n\nSo claim 5 as stated in the summary table -- *"once VMD gets its residual, it\ndoes not"* -- was true of the MSE runs and is not true of these. The spatial arm\nwas losing by 0.098; it now wins by 0.334, and the objective change is worth\n0.442, four and a half times the gap it had to close.')
+A('**Three things stop this being final.**\n\n1. ~~**The baseline has not been re-run under the same objective.**~~\n   **Done.** Under Huber the baseline reaches 14.232 / 26.564 and the margin\n   becomes -1.4% MAE, -5.7% RMSE. The L1 pair is still running.\n2. **Two seeds against a seed noise of 0.116** (section 8). The two Huber seeds\n   are 13.970 and 14.105, a spread of 0.135, so the 0.334 margin is about three\n   times the noise. The L1 and Huber-0.5 rows are single-seed and cannot be read\n   yet.\n3. **Huber makes `nvmd_temporal` worse**, 14.163 -> 14.258. It is not a\n   uniformly better objective; it is the objective under which the wider\n   representation can show a bulk-interval gain. That conditionality is part of\n   the finding, not a tuning detail to be quietly dropped.')
+A('''## 9. Existing literature, and what this project adds
 
-# ---------------------------------------------------------------- pending
-A("\n## 11. Still running\n")
-A(f"| experiment | purpose | done |")
-A(f"|---|---|---:|")
-A(f"| zoo | architecture and decomposition families, 3 seeds | {len(STAB)}/24 |")
-A(f"| dose | one filter bank, churn injected as a controlled dial; now a "
-  f"*negative* control for the retracted hypothesis | {len(DOSE)}/12 |")
-A(f"| spatial 2x2 | horizon (1 vs 6) x exogenous window (trailing vs "
-  f"forward) | {len(SPAT)}/12 |")
-if DOSE:
-    A("\n### dose-response\n")
-    A("| arm | injected churn | honest |")
-    A("|---|---:|---:|")
-    from experiments.run_three_arms import JITTER
-    for a, ch in [("bank", 2.2)] + list(JITTER.items()):
-        r = [x for x in DOSE if x["arm"] == a]
-        if r:
-            h = agg(r)
-            A(f"| `{a}` | {ch:.1f}% | {h[0]:.3f} ± {h[1]:.3f} |")
-if SPAT:
-    A("\n### spatial 2x2\n")
-    A("| config | test MAE | gain vs price-only |")
-    A("|---|---:|---:|")
-    for h in (1, 6):
-        base = agg([r for r in SPAT if r["cfg"] == f"h{h}_price"])
-        for mode in ("price", "back", "fwd"):
-            rr = [r for r in SPAT if r["cfg"] == f"h{h}_{mode}"]
-            if rr:
-                m = agg(rr)
-                g = "--" if mode == "price" or not base else f"{m[0]-base[0]:+.3f}"
-                A(f"| `h{h}_{mode}` | {m[0]:.3f} ± {m[1]:.3f} | {g} |")
+Every row names the paper that already reports the general claim, so the
+contribution column is what is left once that paper is granted. Rows marked
+*pending* are not yet evidence.
 
-A("\n## 12. Caveats\n")
+| the general claim | already reported by | what this project adds |
+|---|---|---|
+| **VMD-based price forecasting leaks** | [VMDNet](https://arxiv.org/abs/2509.15394), Feng, Tao, Cartlidge & Zheng, EUSIPCO 2026 -- asserts leakage, fixes it with sample-wise VMD, does not measure it | **A measurement and a characterisation.** The window alone raises per-mode AR extrapolation error **6.6x** (4.288 to 15.907). And what leaks is identified, not just detected: a **625-parameter linear regression (MAE 4.29) beats a 5.7M-parameter CNN-BiLSTM (13.42)** on the leaked modes, so the modes carry a *linearly readable aggregate* of the future rather than a hard forecasting signal. Capacity is irrelevant because nothing is being forecast -- the answer is being read off. |
+| | | **Two mechanisms separated.** Per-year VMD is both leaky *and* perfectly consistent across windows, because one decomposition serves the whole year. The literature reports the combined effect. Causal VMD removes the leak and loses the consistency; a fixed bank keeps consistency without the leak. The published 7.11 MAE reproduces exactly and degrades to ~10.7 once segmented. |
+| **The decomposition can be made learnable** | [Adaptive Deep-Unfolded VMD](https://arxiv.org/html/2509.00703), Sept 2025 -- unrolls VMD's ADMM into a differentiable module with learnable per-mode bandwidths, per series, on traffic | **Not an unrolled solver.** There is no VMD objective, no ADMM, and no reconstruction loss anywhere in this model. It is a band-parameterised filter bank of **16 parameters** whose centres and bandwidths are **co-trained by the predictive objective alone**, inside the forward pass. The bands are whatever minimises forecast error, not whatever minimises a decomposition criterion. |
+| | | **And the delivery path is itself a finding.** Decomposing inside the forecaster beats handing it precomputed per-timestep modes -- 14.106-14.221 against 14.262-14.817, no overlap, same filter bank. The entire decompose-then-forecast literature uses the losing path. |
+| **Spatial information helps price forecasting** | multi-price-zone STGNNs (Applied Energy 2024), R-vine copula spatial dependence (Int. J. Forecasting 2023), PJM LMP spatiotemporal deep learning | **The coupling is indexed by frequency band.** An STGNN learns one adjacency $A_{ij}$. `PerBandSpatialCoupling` learns $A_{ij}^{(k)}$, one $R \\times R$ matrix per band, over physical bands -- DC, 74.7 h, 26.3 h, 12.1 h, 6.3 h, 3.4 h, 1.8 h, 1.0 h. |
+| **Channels can be decomposed jointly** | MVMD (Rehman & Aftab 2019), now standard on wind and marine panels, stated aim to preserve cross-source correlation *during* decomposition | **Coupling by parameterisation rather than by constraint.** MVMD ties channels by forcing shared centre frequencies and learns no cross-channel weight. Here the bands are shared and a learned matrix per band says how much of each other channel enters. |
+| **Multi-scale decomposition plus a graph model** | Rawal & Ahmad 2024, wavelet/EMD then mutual-information graph then modified GCNN | **Coupling inside the decomposition, not after it.** Theirs is sequential: decompose, build a graph, run a GCNN. |
+| **Multi-scale decomposition for EPF** | WT-SAE-LSTM, WPD-TCN-LSTM, MODWT+EMD+Seq2Seq, VMD-LSTM; 2025-26 adds VMD+attention, VMD+Transformer, V-MAF | **Nothing.** This is not a contribution and should not be claimed as one. V-MAF in particular fuses VMD features with channel attention; the difference from this design is that band indexing is structural rather than learned by an attention head. |
+| **Spatial dependence is scale-dependent** | -- | *Pending.* This would be the claim worth making, and it is a claim about the market rather than about a model. See below: the evidence originally offered for it has been withdrawn. |
+
+### The status of the last row
+
+The obvious evidence -- read $A_k$ and see which driver sits in which band --
+does not survive a second seed.
+
+> Inspecting the trained couplings (`analysis/what_was_learned.py`): five of the
+> eight bands correlate at about **-0.9** between seeds and three at about
+> **+0.9**, for an overall **-0.409**. That is a sign symmetry, $A_k \\to -A_k$
+> with $W \\to -W$ leaving the forecast unchanged, so no individual coupling's
+> sign is identifiable. Band concentration is **0.205** against **0.125** for a
+> channel spread evenly across all eight bands, and the largest coupling mass
+> sits at the **1.0 h** band where the signal is mostly noise.
+>
+> What *is* stable is magnitude: per-channel total $|w|$ correlates **+0.936**
+> across seeds, and both seeds rank `ramp_VIC1`, `ramp_SA1`, `demand_NSW1`
+> first. **Which** channels are used reproduces; **at which band** does not.
+
+The instrument has to be intervention, not inspection: zero a contribution and
+measure the damage, which the sign symmetry cannot touch
+(`analysis/band_ablation.py`, running). Three outcomes, written down in advance
+so the result is not read backwards:
+
+| $\\Delta L_{k,c}$ comes out | then |
+|---|---|
+| band-specific and stable across seeds | the claim stands, on intervention evidence rather than weight inspection -- a stronger footing than reading $A_k$ ever had |
+| stable but **flat across bands** | the model was given the freedom and largely declined to use it. A clean negative result about scale-specificity, publishable as one |
+| near zero everywhere | the exogenous block is redundant conditioning, consistent with taking 60-95% of head input variance for ~1% MAE. The spatial line closes |
+''')
+A("\n## 10. Caveats\n")
 A("- One region, two years, one target, horizon 1. The horizon matters: "
   "`attic/RESULTS-superseded.md` section 11 records h=1 as **saturated** -- persistence scores "
   "14.40 against a best model of ~14.3 -- so everything above is measured "
