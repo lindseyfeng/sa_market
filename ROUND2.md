@@ -1,6 +1,18 @@
-# Unfiltered target, longer horizon: what the decomposition is and is not for
+# The decomposition is not doing the work
 
 *train 2018-2020 or a sliding year, test 2019 / 2021-2022, SA1 half-hourly*
+
+**Summary.** Against a plain LSTM on the same 33 channels, the band
+decomposition is worth 0.15 MAE and the exogenous channels are worth 2.45, on a
+matched comparison that `FINDINGS.md` never ran. The 0.15 reverses sign across
+error segments and across months. The bank is a partition of unity, so it
+reconstructs its input exactly and is an invertible linear reparameterisation:
+buying nothing is what it should do, and it is also what explains the project's
+existing null results about band parameters. Separately, the target FINDINGS
+measures on has had its hard part filtered out -- persistence on 2019 halves,
+26.29 to 14.37 -- and a variance-stabilising transform nobody used is worth 28%
+on the same AR, an order of magnitude more than every architectural difference
+in that document combined.
 
 Everything in [`FINDINGS.md`](FINDINGS.md) is measured on a target that drops
 every negative price and everything above 981.65. This round puts those rows
@@ -151,42 +163,66 @@ is the tail of the training window, whose difficulty bears no stable relation
 to the test quarter -- Q1 has val 27.6 against test 89.5. Model selection is
 not working, and part of the gap in this table is that rather than capability.
 
-## 7. The no-decomposition control: the channels are the result, not the bank
+## 7. The no-decomposition control: the bank is not on the causal path
 
-Q2 2019, h=24, sliding one-year window, identical head and window throughout.
-The only thing that changes down the table is what the head is fed.
+Q2 2019, h=24, sliding one-year window. Identical head, identical window, one
+seed. The only thing that changes down the table is what the head is fed.
 
-| arm | inputs | MAE | selected epoch |
-|---|---|---:|---:|
-| `lstm` | price only, no decomposition | 25.41 | 2 |
-| `nvmd_temporal` | 33 channels, decomposed, no coupling | 25.08 | 8 |
-| `lstm_panel` | 33 channels, **no decomposition** | **22.96** | 2 |
-| `nvmd_st` | 33 channels, decomposed, with coupling | **22.81** | 8 |
+| arm | inputs | MAE | spike 1% | next 9% | calm 90% | bias | pred sd |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `nvmd_st` | 33 ch, decomposed, coupled | **22.81** | 113.66 | 61.87 | 17.87 | +0.25 | 24.0 |
+| `lstm_panel` | 33 ch, **no decomposition** | **22.96** | 113.92 | 60.55 | 18.17 | -3.45 | 22.8 |
+| `nvmd_temporal` | 33 ch, decomposed, uncoupled | 25.08 | 129.39 | 72.16 | 19.19 | -2.77 | 12.6 |
+| `lstm` | price only, no decomposition | 25.41 | 127.39 | 71.46 | 19.65 | -2.96 | 11.3 |
+| persistence | | 34.50 | 219.18 | 123.59 | 23.51 | +0.17 | 42.9 |
 
-Reading the differences:
+Truth sd 42.9.
 
-- **The exogenous channels are worth 2.45** (25.41 to 22.96, price-only against
-  the panel, neither decomposed).
-- **The decomposition is worth 0.15** (22.96 to 22.81, the same 33 channels
-  with and without it). That is inside anything this project would call noise:
-  seed spread on one arm is 0.116 at a scale of 14, and this is one seed.
-- **Decomposition without the coupling is worse than no decomposition at all**,
-  25.08 against 22.96. The band front-end costs 2.1 and the coupling pays it
-  back.
+**The decomposition is worth 0.15 MAE and the exogenous panel is worth 2.45.**
 
-So on a matched comparison the band decomposition is not what is producing the
-numbers. The panel is. This is the control `FINDINGS.md` never had, and it
-reframes every arm-versus-arm margin in that document: those tables compare
-decompositions to each other without ever asking what decomposing buys over
-not decomposing.
+The 0.15 does not survive being looked at. `nvmd_st` wins the spike segment by
+0.26 and the calm segment by 0.30 and **loses the middle segment by 1.33**; by
+month it wins April by 2.66 and May by 1.18 and loses June, the hardest month,
+by 3.15. Three segments in two directions and three months in two directions is
+not an advantage, it is a wash. The two predictions correlate 0.874 and a
+least-squares combination of them scores 22.50, barely better than either.
 
-It is consistent with section 4. An invertible linear reparameterisation should
-buy approximately nothing, and it buys 0.15.
+**The line that does separate the table is the prediction standard deviation,
+and it does not follow the decomposition.** The two arms near 23 predict with
+sd 24.0 and 22.8; the two arms near 25 predict with sd 12.6 and 11.3, against a
+truth of 42.9. The split is between arms that move and arms that have collapsed
+onto a near-constant, and it runs straight through the decomposed group:
+`nvmd_st` is on one side of it and `nvmd_temporal` on the other.
 
-Two caveats that cut in opposite directions. Both LSTM arms were stopped at
-epoch 2 by the validation split, so they may be understated; and `nvmd_st` is
-the arm with the most capacity, so it had the most to gain from the extra
-epochs it got.
+So the band front-end is not what produces the numbers. The 32 exogenous
+channels are. The spatial coupling and the raw panel are two routes to the same
+place -- 22.81 and 22.96 -- and the decomposition sits off the causal path.
+
+This is the control `FINDINGS.md` never had, and it reframes every arm-versus-
+arm margin in that document: those tables compare decompositions to each other
+without ever asking what decomposing buys over not decomposing.
+
+It is also what section 4 predicts. An invertible linear reparameterisation
+should buy approximately nothing, and it buys 0.15. It explains the project's
+own null results -- learned against hard-coded banks within 0.002, five
+families within 0.3%, churn spanning 26x with no effect -- as consequences of
+the construction rather than as findings about decomposition.
+
+**What is structurally wrong.** The bank is a partition of unity, so it
+reconstructs its input exactly and spans the same functions as the raw window
+for any linear read-out. It can only help by making a non-linear function
+easier to express, and on this signal it makes it harder: the predictable
+component at h=1 sits beside Nyquist where log-spaced Gaussian filters overlap
+most, and spike energy is flat across all eight bands (6.9-7.6%), so the one
+part of the signal that carries 37% of the error is exactly the part a
+frequency basis cannot isolate. Splitting a window into K lower-amplitude
+channels and asking a recurrent head to recombine them also costs amplitude:
+both uncoupled decomposed arms collapse to a quarter of the target's spread.
+
+The honest statement is not that decomposition hurts. It is that **this
+decomposition, in this position in the architecture, is doing no work**, and
+the project's positive results need to be re-attributed to the exogenous panel
+until a control says otherwise.
 
 ## 8. What this says about where to put the decomposition
 

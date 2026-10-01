@@ -5,12 +5,21 @@ says otherwise.
 
 **Read [`ROUND2.md`](ROUND2.md) before [`FINDINGS.md`](FINDINGS.md).** It
 redoes the central questions on the unfiltered target and supplies the
-no-decomposition control that FINDINGS never had. Two of its results change how
-FINDINGS should be read: the filter that produced FINDINGS' target drops 1.6%
-of 2018 rising to 20.7% of 2022, almost all of it negative prices, and halves
-persistence on 2019 (26.29 to 14.37); and on matched channels the band
-decomposition is worth 0.15 MAE against a plain LSTM, while the exogenous panel
-is worth 2.45.
+no-decomposition control that FINDINGS never had.
+
+**The headline is that the decomposition is not on the causal path.** Against a
+plain LSTM on the same 33 channels, same head, same window, the bank is worth
+0.15 MAE and the exogenous panel is worth 2.45 -- and the 0.15 reverses sign
+across error segments and across months. What separates the table is prediction
+spread, not decomposition: the two arms that score near 23 predict with sd 24.0
+and 22.8 against a truth of 42.9, the two that score near 25 predict with 12.6
+and 11.3, and that line runs through the decomposed group rather than around
+it. Treat every arm-versus-arm margin in FINDINGS as un-controlled until this
+is repeated with seeds.
+
+Second, the target FINDINGS measures on has had its hard part filtered out: the
+filter drops 1.6% of 2018 rising to 20.7% of 2022, almost all negative prices,
+and halves persistence on 2019 (26.29 to 14.37).
 
 [`FINDINGS.md`](FINDINGS.md) remains the record of the leakage and cost
 results, which ROUND2 does not touch. The older running log has been moved to
