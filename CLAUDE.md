@@ -3,8 +3,17 @@
 AEMO NEM, South Australia, half-hourly RRP. Train 2018, test 2019 unless a file
 says otherwise.
 
-**[`FINDINGS.md`](FINDINGS.md) is the only current document.** Read it first
-and treat it as authoritative. The older running log has been moved to
+**Read [`ROUND2.md`](ROUND2.md) before [`FINDINGS.md`](FINDINGS.md).** It
+redoes the central questions on the unfiltered target and supplies the
+no-decomposition control that FINDINGS never had. Two of its results change how
+FINDINGS should be read: the filter that produced FINDINGS' target drops 1.6%
+of 2018 rising to 20.7% of 2022, almost all of it negative prices, and halves
+persistence on 2019 (26.29 to 14.37); and on matched channels the band
+decomposition is worth 0.15 MAE against a plain LSTM, while the exogenous panel
+is worth 2.45.
+
+[`FINDINGS.md`](FINDINGS.md) remains the record of the leakage and cost
+results, which ROUND2 does not touch. The older running log has been moved to
 `attic/RESULTS-superseded.md` and carries a banner saying so -- it is kept only
 because FINDINGS and THREE_ARMS cite its section numbers, and several of its
 comparisons were later found confounded (VMD without its residual; epoch

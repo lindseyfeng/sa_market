@@ -81,6 +81,9 @@ def main():
     ap.add_argument("--K", type=int, default=8)
     ap.add_argument("--alpha", type=float, default=1000)
     ap.add_argument("--window", type=int, default=96)
+    ap.add_argument("--channels", default="",
+                    help="comma-separated subset; default is every "
+                         "non-calendar channel")
     ap.add_argument("--n-jobs", type=int, default=8)
     ap.add_argument("--outdir", default="cache/vmd_panel_K8_a1000_W96")
     args = ap.parse_args()
@@ -89,6 +92,12 @@ def main():
     df = pd.read_csv(args.panel, parse_dates=["SETTLEMENTDATE"])
     chans = [c for c in df.columns if c != "SETTLEMENTDATE"]
     decomp = [c for c in chans if not c.startswith(CAL_PREFIX)]
+    if args.channels:
+        want = args.channels.split(",")
+        missing = [c for c in want if c not in decomp]
+        if missing:
+            raise SystemExit(f"not decomposable: {missing}")
+        decomp = want
     years = [int(v) for v in args.years.split(",")]
 
     print(f"panel {args.panel}: {len(chans)} channels, "

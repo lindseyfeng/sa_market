@@ -144,6 +144,9 @@ def main():
     ap.add_argument("--years", default="2018,2019")
     ap.add_argument("--K", type=int, default=K_DEFAULT)
     ap.add_argument("--window", type=int, default=96)
+    ap.add_argument("--cache-prefix", default="cache/",
+                    help="write under a different prefix to keep an "
+                         "older cache built from another panel")
     ap.add_argument("--n-jobs", type=int, default=6)
     args = ap.parse_args()
 
@@ -152,7 +155,7 @@ def main():
     pad = min(20, W // 4)
 
     for meth in args.methods.split(","):
-        outdir = f"cache/decomp_{meth.replace(':', '')}_K{K}_W{W}"
+        outdir = f"{args.cache_prefix}decomp_{meth.replace(':', '')}_K{K}_W{W}"
         os.makedirs(outdir, exist_ok=True)
         for year in [int(y) for y in args.years.split(",")]:
             mp = os.path.join(outdir, f"{year}_{args.channel}.npy")
