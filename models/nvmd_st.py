@@ -39,13 +39,31 @@ from models.nvmd_v3 import StructuredSpectralNVMD
 class PerBandSpatialCoupling(nn.Module):
     """One R x R mixing matrix per frequency band, identity-initialised."""
 
-    def __init__(self, R: int, K: int, enabled: bool = True):
+    def __init__(self, R: int, K: int, enabled: bool = True, init: float = 0.0):
+        """`init` > 0 seeds the off-diagonal deviation with N(0, init).
+
+        Zero is the default because it makes the coupled and uncoupled arms
+        identical at step 0, which is what turns `--coupling 0` into an exact
+        ablation rather than a different model. It has a cost that was only
+        visible once a linear control was put beside the network: with A = I and
+        the self term removed, the exogenous mix is *exactly zero* at
+        initialisation, so the exogenous pathway starts dead and has to be grown
+        from nothing while the own-mode pathway starts as a lossless identity.
+        Measured at h=6, the network captured 82% of the exogenous value that a
+        ridge on the same window captured, performing like a rank-4 projection
+        despite having rank 8 available -- and a rank-8 ridge reaches 98%, so the
+        capacity was there and went unused. A non-zero init trades the exact
+        ablation for a live pathway at step 0; keep both and report both.
+        """
         super().__init__()
         self.R, self.K, self.enabled = R, K, enabled
         eye = torch.eye(R).unsqueeze(0).repeat(K, 1, 1)      # (K, R, R)
         self.register_buffer("eye", eye.clone())
-        # Learn the *deviation* from identity so init is exactly temporal NVMD.
-        self.delta = nn.Parameter(torch.zeros(K, R, R))
+        d = torch.zeros(K, R, R)
+        if init > 0:
+            d.normal_(0.0, init)
+            d[:, torch.arange(R), torch.arange(R)] = 0.0     # keep the diagonal exact
+        self.delta = nn.Parameter(d)
 
     def matrices(self):
         return self.eye + self.delta if self.enabled else self.eye
