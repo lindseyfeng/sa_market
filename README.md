@@ -23,7 +23,35 @@ The full band model improves MAE by **6.8%** relative to `panel_lstm`. This is a
 
 ![Architecture: shared frequency bank, separate own and exogenous pathways, shared LSTM, and region-specific embeddings.](assets/architecture.png)
 
-### 1.1 Frequency bank
+### 1.1 Targets and inputs
+
+![The five NEM regions on the map, the interconnectors between them, and the composition of one 37-channel input window.](assets/regions_map.png)
+
+The five targets are the NEM **regional reference prices**: `SA1` (South Australia), `NSW1` (New South Wales), `VIC1` (Victoria), `QLD1` (Queensland), `TAS1` (Tasmania). One price per region per half-hour, settled by AEMO. Western Australia and the Northern Territory run separate grids and are not in the NEM, so they are neither modelled nor available as inputs.
+
+The grid connecting them is a **path, not a mesh**: QLD1–NSW1–VIC1–SA1 in a line, with TAS1 hanging off VIC1 through Basslink. SA1 is at one end of that path and is the region this report evaluates. Nothing in the model is told the topology. Per-band coupling is initialised at identity and left free, which is what makes a learned coupling worth reading against the map rather than a restatement of it.
+
+Each input window is **37 channels x 96 half-hours = 3,552 values**, 48 hours of history ending at the forecast origin:
+
+| Group | Channels | Contents |
+|---|---:|---|
+| Regional prices | 5 | `SA1_price`, `NSW1_price`, `VIC1_price`, `QLD1_price`, `TAS1_price` — the five targets, also read as inputs |
+| Regional demand | 6 | `demand_{SA1,NSW1,VIC1,QLD1,TAS1}` plus `demand_NEM`, which is the sum of the other five |
+| SA1 spreads | 4 | `spread_SA1_{NSW1,VIC1,QLD1,TAS1}` — linear combinations of the price channels, carrying nothing the levels do not |
+| Ramp / scarcity | 3 | `ramp_SA1`, `ramp_VIC1`, `scarcity_SA1` |
+| Weather | 12 | `temp` / `wind100` / `solar` at four reanalysis grid points |
+| Calendar | 7 | day, week and year `sin`/`cos`, plus a weekend flag |
+| **Total** | **37** | |
+
+Two things about this input set constrain how far the results generalise.
+
+**The weather is SA-centric.** The four grid points are Adelaide (−34.90, 138.54), a mid-north SA wind zone (−33.15, 138.60), a south-east SA wind zone (−37.72, 140.41), and Melbourne (−37.79, 144.94). Four of the five target regions have no weather channel of their own. The exogenous panel was built for an SA1 forecast and then reused when the model went joint; a regional arm predicting QLD1 is working without any QLD weather.
+
+**The weather is reanalysis, not forecast.** These are the values that actually occurred, read at a time a forecaster would only have had a prediction of them. Any result that uses them is an upper bound until it is rerun with forecast weather. Section 7 lists this among the checks still owed.
+
+Twelve of the 37 channels are also used as auxiliary targets when `--w-aux > 0` (the five demands, four `wind100` channels, two ramps, and scarcity). Calendar channels are excluded from that list because they are deterministic and would hand the auxiliary loss a free ride, and the spreads are excluded because they are linear in the price targets.
+
+### 1.2 Frequency bank
 
 Each input window contains 37 channels and 96 half-hour observations:
 
@@ -34,7 +62,7 @@ $$
 The bank applies an rFFT to each channel, multiplies the spectrum by eight Gaussian masks, and applies an inverse rFFT:
 
 $$
-x_{c,k}=\mathcal{F}^{-1}\!\left(M_k\odot\mathcal{F}(x_c)\right),
+x_{c,k}=\mathcal{F}^{-1}\left(M_k\odot\mathcal{F}(x_c)\right),
 \qquad
 M_k(f)\ge0,\quad\sum_{k=1}^{8}M_k(f)=1.
 $$
@@ -49,23 +77,32 @@ Reported reconstruction error: `4.8e-07`.
 
 The bank has eight center-gap parameters and eight bandwidth parameters. Centers are ordered through cumulative softmax gaps, initialized geometrically with gaps proportional to `1.8^k`. These masks cover slow through fast variations, up to the Nyquist frequency. Exact learned periods are unavailable for most arms because checkpoints were not saved.
 
-**All reported runs use `adapt=0`: masks are shared across input windows.** The encoder and gap head for input-dependent masks are inactive in these runs.
+**All reported runs use `adapt=0`: one set of masks, shared across every input window.** It is hard-coded at `experiments/run_joint.py:331` — `JointForecaster(..., adapt=0.0, ...)`, on the path every arm takes — and is not exposed as a flag. It reaches the bank's only input-dependent branch, `models/nvmd_v3.py:133`:
 
-### 1.2 Per-band coupling
+```python
+logits = self.gap_logits.unsqueeze(0)              # (1, K)
+if x is not None and self.adapt > 0:               # never taken when adapt=0
+    delta = torch.tanh(self.gap_head(self.encoder(x)))
+    logits = logits + self.adapt * delta
+```
+
+With `adapt=0` the branch never runs, so `gap_logits` is an ordinary parameter vector evaluated identically for every window. The encoder and gap head still exist and still allocate 57,640 parameters; they receive no gradient. Note that the module's own default is `adapt=0.5` (`models/nvmd_v3.py:82`): the joint runner pins it to zero deliberately. The nonlinear path was not merely unused here, it was never run in this project.
+
+### 1.3 Per-band coupling
 
 For target region r, the model keeps its own eight modes and constructs eight weighted combinations of other channels:
 
 $$
-\operatorname{own}_{r,k}=x_{r,k},
+\mathrm{own}_{r,k}=x_{r,k},
 \qquad
-\operatorname{exo}_{r,k}=\sum_{c\ne r}\Delta_k[r,c]x_{c,k}.
+\mathrm{exo}_{r,k}=\sum_{c\ne r}\Delta_k[r,c]x_{c,k}.
 $$
 
 The source uses the parameterization `A_k = I + Δ_k`; the self-term is excluded from the exogenous pathway. At identity initialization, `Δ = 0`, so the exogenous features are zero.
 
 Concatenation produces **`(B, 5, 16, 96)`**. Five target rows per band give `8 × 5 × 36 = 1,440` active off-diagonal coupling entries out of 10,952 allocated entries. The 37 channels include physical drivers as well as prices, so this pathway mixes variables as well as regions.
 
-### 1.3 Shared prediction head
+### 1.4 Shared prediction head
 
 Regions are folded into the batch:
 
@@ -89,7 +126,7 @@ The output has shape **`(B, 5)`**. Bidirectionality operates within the historic
 | Shared head | 579,073 | 89.4% | LSTM 544,768; embeddings 1,280; MLP 33,025 |
 | **Total** | **647,681** | **100%** | Allocated count is not the same as active count |
 
-### 1.4 Architectural variants
+### 1.5 Architectural variants
 
 | Switch / arm | Change |
 |---|---|
@@ -106,14 +143,14 @@ These variants have different information paths, widths, or initializations. The
 
 ### 2.1 The decomposition is linear when masks are fixed
 
-With `adapt=0`, the trained bank is a fixed linear map:
+With `adapt=0` — hard-coded in the runner, see §1.2 — the trained bank is a fixed linear map:
 
 $$
 u=Dx,\qquad
 u=[x_1^\top,\ldots,x_K^\top]^\top.
 $$
 
-Learnable parameters do not make the map nonlinear in its input. Input-dependent masks would change this conclusion.
+Learnable parameters do not make the map nonlinear in its input: the centres and widths are learned, but they are learned once and then applied identically to every window, so for a trained model `D` is a constant matrix. Input-dependent masks (`adapt > 0`) are the one switch that would change this conclusion, and they have not been run.
 
 Summing modes recovers x, so D is injective and has a left inverse. It is a redundant representation, rather than a square invertible matrix. The complete bank adds no new observations; downstream compression in the exogenous pathway can still discard information.
 
@@ -196,7 +233,7 @@ These are a separate sweep's figures, not the MAEs in the main results table. Th
 The price transform compresses extreme values:
 
 $$
-z=\operatorname{asinh}\!\left(\frac{p-c}{w}\right),
+z=\mathrm{asinh}\left(\frac{p-c}{w}\right),
 \qquad p=c+w\sinh z,
 \qquad J(z)=\left|\frac{dp}{dz}\right|=w\cosh z,
 $$
@@ -217,7 +254,7 @@ An equal transformed-space error can correspond to a much larger dollar error in
 The price loss uses the truth-dependent weight:
 
 $$
-q_{ir}=\left(\frac{J(z_{ir})}{\operatorname{mean}_{j,s}J(z_{js})}\right)^\alpha,
+q_{ir}=\left(\frac{J(z_{ir})}{\mathrm{mean}_{j,s}J(z_{js})}\right)^\alpha,
 \qquad
 L_{\mathrm{price}}=\frac{1}{|B|R}\sum_{i,r}q_{ir}|\hat z_{ir}-z_{ir}|.
 $$
@@ -269,7 +306,7 @@ $$
 and σ_d,r is the training standard deviation of the regional deviation. The separation term uses adjacent bands:
 
 $$
-L_{\mathrm{sep}}=\operatorname{mean}_k
+L_{\mathrm{sep}}=\mathrm{mean}_k
 \left[\max\left(0,\frac{m(bw_k+bw_{k+1})}{2}-(ctr_{k+1}-ctr_k)\right)\right]^2,
 \qquad m=1.
 $$
@@ -334,7 +371,18 @@ The following table retains the source percentages and DM p-values. Percentages 
 | 0.75 | -6.8% (0.000) | +12.9% (1.000) | +3.3% (0.797) | -3.6% (0.075) | 38.41 | 250.3 |
 | 1.0 | -2.0% (0.092) | +24.4% (1.000) | +14.4% (0.979) | -4.1% (0.212) | 40.95 | 251.7 |
 
-The source does not specify the DM test's alternative hypothesis, serial-correlation correction, or adjustment for multiple comparisons. Values close to 1 suggest directional tests, but this needs confirmation. A displayed `0.000` is a rounded value, not literally zero.
+**Test specification** (`analysis/eval_joint.py:79`). The test is a **one-sided** Diebold-Mariano on the absolute-error differential `d_t = |e_ridge,t| - |e_model,t|`, with `H0: E[d_t] <= 0`. A small p-value therefore says the model is more accurate than ridge, and a p-value near 1 says the opposite — which is why the table's worse cells read `0.999` and `1.000` rather than being reported as non-significant.
+
+The variance is Newey-West, and the bandwidth is the **Andrews (1991) AR(1) plug-in**, not the `4(n/100)^(2/9)` rule of thumb:
+
+$$
+m=\left\lceil 1.1447\left(\frac{4\rho^2 n}{(1-\rho^2)^2}\right)^{1/3}\right\rceil,
+\qquad \rho=\widehat{\mathrm{AC1}}(d),\qquad m\le n/4.
+$$
+
+This matters here: the windows overlap on a highly persistent price, the measured AC1 runs near 0.99, and the rule of thumb would pick 4 lags and overstate z by about an order of magnitude. The reported `ac1` and effective sample size travel with each result so the bandwidth choice can be checked rather than trusted.
+
+**Not** corrected for multiplicity. The table is 20 comparisons across five α values and four regimes, and §6's half-hour counts (`33/48`, `32/48`) come from 48 further tests each at the 0.05 level. Read any single cell near 0.05 accordingly. A displayed `0.000` is a rounded value, not literally zero. The regimes are defined on the realised outcome, so every regime row is a conditional comparison and cannot be read as an unconditional claim.
 
 ### 5.2 Practical readings
 
@@ -380,14 +428,15 @@ A classifier using the historical window reportedly recalls 26% of negative-pric
 
 ## 7. Evidence limits and checks needed
 
-- **One seed and a narrow evaluation scope.** The report evaluates SA1 in the 2021 test year while training a five-output model; it also references a two-year data span. Verify split dates and horizon units before publication. The source reports seed noise of 0.116 MAE elsewhere, versus 0.04 across five decomposition families; small differences need replication.
+- **One seed and a narrow evaluation scope.** The split is resolved: train and validate on **2018-2020**, test on **2021**, with validation taken as the last 15% of the training windows in time order and a 96-step gap between the two so they cannot overlap (`experiments/run_joint.py:645`). The horizon is **h = 6 half-hour steps, i.e. three hours ahead**. The model has five outputs; only SA1 is scored here, so nothing in this report says whether the joint architecture helps the other four regions, and the four of them with no weather channel of their own (§1.1) are the ones most likely to behave differently. One seed throughout: the source reports seed noise of 0.116 MAE, against 0.04 across five decomposition families, so any margin of that size needs replication before it is believed.
 - **Stronger ridge baseline.** The finer-grid ridge reaches 37.04 MAE at `lam=3e4`; the source says validation and test optima coincide on that grid. Use validation-only selection, save predictions, and rerun paired comparisons before claiming a gain over ridge.
 - **Historical exogenous features.** Their use alone does not make the result an upper bound. Validate availability at the forecast origin, publication delays, and revisions. Forecast covariates, if used later, require their own availability checks.
 - **Mask interpretation.** Most arms lack checkpoints. Initial center locations cannot be presented as learned bands. `--save-model` now records centers, widths, and coupling tensors; only `+exp` arms used it in the reported sweep.
+- **The nonlinear bank was never run.** `adapt > 0` is the only switch that makes the decomposition nonlinear in its input, and every arm in this report sets `adapt=0` (§1.2). Every conclusion in §2 is therefore about a *linear* decomposition, and none of it transfers to the adaptive variant without running it.
 - **Regime definitions.** Thresholds defining calm, high, negative, and spike are not included in the supplied text. Add them for reproducibility.
 - **Ridge equivalence.** Audit band-feature construction, normalization, regularization, and prediction comparison before treating exact equality as a mechanism result.
 - **Mechanism attribution.** The compression and whole-window explanations are hypotheses supported by partial controls. The existing comparisons do not uniquely identify them.
-- **Statistics.** Document DM-test direction, loss differential, temporal dependence treatment, sample counts, and multiplicity. Save per-timestamp predictions for all arms.
+- **Statistics.** Direction, loss differential and the serial-correlation treatment are now documented in §5.1. What is still owed: no multiplicity adjustment is applied anywhere in this report, and per-timestamp *validation* predictions are not saved, which is what blocks fitting the §6.2 ensemble weights out of sample.
 
 ## 8. Prior findings and repository references
 
@@ -401,6 +450,6 @@ The source also reports paired effects of −6.8% for `joint` versus the raw-win
 
 ### Editorial notes
 
-This rewrite preserves the supplied numerical results and distinguishes observations from hypotheses. It corrects the ridge-equivalence argument, the best-spike claim, the strict-monotonicity claim, the interpretation of coupling-penalty ablation, and the unsupported upper-bound claim about historical exogenous inputs.
+This rewrite preserves the supplied numerical results and distinguishes observations from hypotheses. A later pass added §1.1 (the five regions, the grid topology, and what the 37 channels are), resolved the split dates, horizon units and DM-test specification against the code rather than leaving them as open questions, recorded where `adapt=0` is set and that the nonlinear bank has never been run, and replaced `\operatorname` with `\mathrm` throughout because GitHub's renderer rejects it. It corrects the ridge-equivalence argument, the best-spike claim, the strict-monotonicity claim, the interpretation of coupling-penalty ablation, and the unsupported upper-bound claim about historical exogenous inputs.
 
 One correction has since been reversed against the logs. An earlier draft restated the tree comparison as `41.37 → 40.51`, a 2.1% improvement; those two numbers come from different experiments with different training-set sizes. The within-experiment comparison in `logs/basis_matters.log` is `38.797 → 40.509`, a 4.4% deterioration, and §2.4 now reports that. No new experiments were run for this rewrite.

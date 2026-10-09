@@ -3,9 +3,11 @@
 AEMO NEM, South Australia, half-hourly RRP. Train 2018, test 2019 unless a file
 says otherwise.
 
-**Read [`ROUND2.md`](ROUND2.md) before [`FINDINGS.md`](FINDINGS.md).** It
-redoes the central questions on the unfiltered target and supplies the
-no-decomposition control that FINDINGS never had.
+**[`README.md`](README.md) is the current report.** It is written on the
+joint five-region model, the controlled ablations, and the baselines, and it
+replaces the old FINDINGS.md. Read [`ROUND2.md`](ROUND2.md) for the step that
+got there: it redoes the central questions on the unfiltered target and
+supplies the no-decomposition control the early work never had.
 
 **The headline is that the decomposition is not on the causal path.** Against a
 plain LSTM on the same 33 channels, same head, same window, the bank is worth
@@ -14,23 +16,23 @@ across error segments and across months. What separates the table is prediction
 spread, not decomposition: the two arms that score near 23 predict with sd 24.0
 and 22.8 against a truth of 42.9, the two that score near 25 predict with 12.6
 and 11.3, and that line runs through the decomposed group rather than around
-it. Treat every arm-versus-arm margin in FINDINGS as un-controlled until this
-is repeated with seeds.
+it. Treat every arm-versus-arm margin in the pre-ROUND2 reports as
+un-controlled until this is repeated with seeds.
 
-Second, the target FINDINGS measures on has had its hard part filtered out: the
+Second, the target those early reports measure on has had its hard part
+filtered out: the
 filter drops 1.6% of 2018 rising to 20.7% of 2022, almost all negative prices,
 and halves persistence on 2019 (26.29 to 14.37).
 
-[`FINDINGS.md`](FINDINGS.md) is kept short on purpose: the two results that
-hold, and the current state of the joint multi-region work. The long record --
-every arm, every decomposition family, every retraction, and the leakage and
-cost results in full -- is [`attic/FINDINGS-full.md`](attic/FINDINGS-full.md).
-Both regenerate from the same result files, so neither goes stale against the
-other. [`PITFALLS.md`](PITFALLS.md) is the operational companion: how to reach
+The long record -- every arm, every decomposition family, every retraction,
+and the leakage and cost results in full -- is
+[`attic/FINDINGS-full.md`](attic/FINDINGS-full.md), regenerated from the result
+files by `report.report_findings`. README.md is written by hand against those
+same files and is the one to read first. [`PITFALLS.md`](PITFALLS.md) is the operational companion: how to reach
 PACE, what decides queue time there, and the objective and baseline traps that
 cost the most time. The older running log has been moved to
 `attic/RESULTS-superseded.md` and carries a banner saying so -- it is kept only
-because FINDINGS and THREE_ARMS cite its section numbers, and several of its
+because `attic/FINDINGS-full.md` and THREE_ARMS cite its section numbers, and several of its
 comparisons were later found confounded (VMD without its residual; epoch
 selected on test).
 
@@ -126,9 +128,9 @@ python3 -m decomp.decomp_zoo --methods ewt,emd,wpt,bank
 python3 -m analysis.basis_stability --n 1500
 ./scripts/zoo_then_dose.sh        # decomposition families, then the churn ladder
 ./scripts/spatial.sh              # horizon x exogenous-window 2x2
-python3 -m report.findings        # regenerate FINDINGS.md (short)
 python3 -m report.report_findings # regenerate attic/FINDINGS-full.md
 python3 -m report.plot_bands      # regenerate the band-comparison figure
+python3 report/plot_regions.py    # regenerate assets/regions_map.png
 ```
 
 Both runners **resume**: any `(arm, seed)` already in the result JSON is
