@@ -298,6 +298,12 @@ def run_arm(arm, seed, data, args, device):
     head = bits[0] or args.head
     xfilter = "film" in bits
     ctx = next((int(b[3:]) for b in bits if b.startswith("ctx")), args.context)
+    # "+exp" gives the physical drivers their own band channels instead of
+    # folding them into the single per-band exogenous scalar. Which channels
+    # those are is --expand; the default is demand and wind, the causes rather
+    # than the prices, because after the common mode is removed the other
+    # regional prices carry 0.4-1.9% of the variance at any scale.
+    expand = tuple(data["expand_idx"]) if "exp" in bits else ()
     base = parts[0]
     # "panel" is the no-decomposition control: the same head reading the raw
     # window. It is the only arm that isolates the decomposition, because a band
@@ -322,7 +328,7 @@ def run_arm(arm, seed, data, args, device):
         lstm_hidden=args.hidden, adapt=0.0, coupling=(base == "joint"),
         coupling_init=(c_init if base == "joint" else 0.0), head=head,
         decompose=decompose, n_chan=data["n_feat"],
-        xfilter=xfilter, context=ctx,
+        xfilter=xfilter, context=ctx, expand=expand,
     ).to(device)
     # "joint@0.01" is the joint arm with its off-diagonal coupling seeded at
     # N(0, 0.01). Carrying it in the arm name rather than a global flag lets both
@@ -341,6 +347,12 @@ def run_arm(arm, seed, data, args, device):
     head = bits[0] or args.head
     xfilter = "film" in bits
     ctx = next((int(b[3:]) for b in bits if b.startswith("ctx")), args.context)
+    # "+exp" gives the physical drivers their own band channels instead of
+    # folding them into the single per-band exogenous scalar. Which channels
+    # those are is --expand; the default is demand and wind, the causes rather
+    # than the prices, because after the common mode is removed the other
+    # regional prices carry 0.4-1.9% of the variance at any scale.
+    expand = tuple(data["expand_idx"]) if "exp" in bits else ()
     base = parts[0]
     # "panel" is the no-decomposition control: the same head reading the raw
     # window. It is the only arm that isolates the decomposition, because a band
@@ -412,6 +424,24 @@ def run_arm(arm, seed, data, args, device):
             print("  early stop", flush=True); break
 
     model.load_state_dict(state)
+    if args.save_model:
+        os.makedirs(args.save_model, exist_ok=True)
+        tag = re.sub(r"[^A-Za-z0-9._-]", "_", arm)
+        blob = {"state": state, "arm": arm, "seed": seed, "targets": targets,
+                "names": names, "head": head, "xfilter": xfilter,
+                "context": ctx, "expand": list(expand), "decompose": decompose}
+        if decompose:
+            # The bank's own parameters, in physical units, so the learned band
+            # structure can be read without rebuilding the model.
+            with torch.no_grad():
+                dec = model.decomposer.decomposer
+                c_, bw_ = dec.bands(None)
+                blob["band_centres"] = c_[0].cpu().numpy()
+                blob["band_bandwidths"] = bw_[0].cpu().numpy()
+                blob["coupling_delta"] = \
+                    model.decomposer.coupling.delta.detach().cpu().numpy()
+        torch.save(blob, os.path.join(args.save_model, f"{tag}_s{seed}.pt"))
+
     t = evaluate(model, dl["test"], device, scaler, names, n_price, cut)
 
     if args.save_preds:
@@ -438,6 +468,7 @@ def run_arm(arm, seed, data, args, device):
            "n_feat": data["n_feat"], "n_targets": len(targets),
            "n_price": n_price,
            "head": tag, "context": ctx, "xfilter": xfilter,
+           "expand": len(expand),
            "loss": {"kind": args.loss, "w_jacobian": args.w_jacobian,
                     "coupling_init": c_init,
                     "w_dev": args.w_dev, "w_aux": args.w_aux,
@@ -529,6 +560,15 @@ def main():
                          "them. At window 96 nothing above 20.1 h exists in the "
                          "bank's output, so the 168 h weekly cycle is absent "
                          "from the input. Needs --skip-head >= context - seq_len.")
+    ap.add_argument("--expand", default="demand_SA1,demand_NSW1,demand_VIC1,"
+                                      "demand_QLD1,demand_TAS1,wind100_adelaide,"
+                                      "wind100_nsa_wind,wind100_sesa_wind,"
+                                      "wind100_melbourne",
+                    help="channels the '+exp' arms give their own band set")
+    ap.add_argument("--save-model", default=None,
+                    help="write the val-selected weights here, so the learned "
+                         "band centres can be read back. Nothing was saved "
+                         "before, which left the filter bank uninspectable.")
     ap.add_argument("--head", default="lstm", choices=["lstm", "linear"],
                     help="what reads the bands; the arm name can override it")
     ap.add_argument("--coupling-init", type=float, default=0.0,
@@ -669,6 +709,8 @@ def main():
         "ctx_max": ctx_max,
         "n_feat": f_tr.shape[1], "targets": tgt_idx, "names": names,
         "scaler": sc, "one": one, "scaler_one": scaler_one, "chans": chans,
+        "expand_idx": [chans.index(c) for c in args.expand.split(",")
+                       if c and c in chans],
         "aux_idx": aux_idx, "aux_names": aux_names, "dev_sd": dev_sd,
         "scaler_aux": sca,
     }

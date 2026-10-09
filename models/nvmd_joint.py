@@ -44,7 +44,7 @@ class JointSpatioTemporalNVMD(nn.Module):
     def __init__(self, C: int, targets, K: int = 8, signal_len: int = 96,
                  d_model: int = 128, adapt: float = 0.0, coupling: bool = True,
                  coupling_init: float = 0.0, xfilter: bool = False,
-                 context: int = None):
+                 context: int = None, expand=()):
         """`xfilter` is the only part of this model a linear reader cannot copy.
 
         A partition-of-unity band decomposition is an invertible linear map, and
@@ -73,6 +73,8 @@ class JointSpatioTemporalNVMD(nn.Module):
         self.C, self.K = C, K
         self.ctx = context or signal_len
         self.out_len = signal_len
+        self.register_buffer("expand",
+                             torch.as_tensor(list(expand), dtype=torch.long))
         self.register_buffer("targets", torch.as_tensor(list(targets), dtype=torch.long))
         self.decomposer = StructuredSpectralNVMD(
             K=K, signal_len=self.ctx, d_model=d_model, adapt=adapt,
@@ -80,6 +82,27 @@ class JointSpatioTemporalNVMD(nn.Module):
         self.coupling = PerBandSpatialCoupling(C, K, enabled=coupling,
                                                init=coupling_init)
         self.xfilter = CrossFilter(K) if xfilter else None
+
+    def expanded(self, modes):
+        """Channels handed to the head as their own full band set.
+
+        The default collapses all 36 non-target channels into one scalar per
+        band. Measured on the panel, that is the wrong thing to compress:
+        after removing the cross-region common mode, regional structure is
+        0.4-1.9% of the variance in every band, so the other four regional
+        prices are nearly redundant with the target's own common mode -- trees
+        on five regional price windows score 40.25 against 41.37 on the target's
+        own, a 2.7% gain, while adding the physical drivers takes it to 38.92, a
+        further 3.3%. Drivers are causes and prices are effects, so the drivers
+        carry information the price common mode does not.
+
+        So the drivers get their own bands and the rest stays collapsed. The
+        collapse is not a capacity problem where it remains: a rank-8 ridge
+        already captures 98% of the exogenous value a full-rank one does.
+        """
+        if not len(self.expand):
+            return None
+        return modes[:, self.expand]                       # (B, X, K, L)
 
     def exogenous(self, modes):
         """(B, C, K, L) -> (B, T, K, L): per target, the mix of every *other*
@@ -103,8 +126,17 @@ class JointSpatioTemporalNVMD(nn.Module):
         exo = self.exogenous(modes)                        # (B, T, K, L)
         if self.out_len < L:                               # long bank view, short head view
             own, exo = own[..., -self.out_len:], exo[..., -self.out_len:]
+        ex = self.expanded(modes)
+        if ex is not None:
+            if self.out_len < L:
+                ex = ex[..., -self.out_len:]
+            # Same expanded block for every target: it is panel-wide context,
+            # not something the target index should change.
+            ex = ex.unsqueeze(1).expand(-1, own.shape[1], -1, -1, -1)
+            ex = ex.reshape(B, own.shape[1], -1, own.shape[-1])
         if self.xfilter is None:
-            return torch.cat([own, exo], dim=2), masks     # (B, T, 2K, L)
+            parts = [own, exo] + ([ex] if ex is not None else [])
+            return torch.cat(parts, dim=2), masks          # (B, T, (2+X)K, L)
         # `own` is carried through untouched as well as gated, so the lossless
         # encoding survives the gate exactly as it survives plain concat.
         T, Lo = own.shape[1], own.shape[-1]
@@ -112,7 +144,9 @@ class JointSpatioTemporalNVMD(nn.Module):
         e = exo.reshape(B * T, self.K, Lo)
         e_x, fused = self.xfilter(o, e)
         out = torch.cat([o, e_x, fused], dim=1).reshape(B, T, 3 * self.K, Lo)
-        return out, masks                                  # (B, T, 3K, L)
+        if ex is not None:
+            out = torch.cat([out, ex], dim=2)
+        return out, masks                                  # (B, T, (3+X)K, L)
 
 
 class JointForecaster(nn.Module):
@@ -129,7 +163,7 @@ class JointForecaster(nn.Module):
                  adapt: float = 0.0, coupling: bool = True,
                  coupling_init: float = 0.0, head: str = "lstm",
                  decompose: bool = True, n_chan: int = None,
-                 xfilter: bool = False, context: int = None):
+                 xfilter: bool = False, context: int = None, expand=()):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -154,8 +188,10 @@ class JointForecaster(nn.Module):
                 C=C, targets=targets, K=K, signal_len=signal_len,
                 d_model=d_model, adapt=adapt, coupling=coupling,
                 coupling_init=coupling_init, xfilter=xfilter, context=context,
+                expand=expand,
             )
-        n_in = ((3 if xfilter else 2) * K) if decompose else (n_chan or C)
+        n_in = (((3 if xfilter else 2) + len(expand)) * K) if decompose \
+            else (n_chan or C)
         if head == "lstm":
             self.lstm = nn.LSTM(n_in, lstm_hidden, lstm_layers, batch_first=True,
                                 bidirectional=True,
