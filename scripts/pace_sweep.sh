@@ -10,6 +10,11 @@
 # Each job writes its own result file. A shared --out would have six processes
 # racing on one JSON, and the resume logic reads it at startup.
 #
+# --time is 25 minutes, not the two hours first asked for. Measured on an A100,
+# 2,000 windows take ~1 s an epoch, so 30 epochs at full scale is about 11
+# minutes; a two-hour hole is far harder to backfill into than a 25-minute one,
+# and the walltime is what the scheduler plans around.
+#
 # One seed. Three would triple the cost for a margin this sweep is not yet
 # trying to resolve; seeds come after an arm is worth repeating.
 set -euo pipefail
@@ -39,7 +44,7 @@ for arm in $ARMS; do
     --job-name="h${H}_${tag}" \
     --partition=gpu-a100,gpu-v100,gpu-h100,gpu-l40s,gpu-rtx6000 \
     --nodes=1 --ntasks-per-node=1 --gres=gpu:1 --mem-per-cpu=32G \
-    --time=02:00:00 \
+    --time="${WALL:-00:25:00}" \
     --output="logs/h${H}_${tag}_%j.out" \
     --wrap "cd \$SLURM_SUBMIT_DIR && \
       nvidia-smi --query-gpu=name --format=csv,noheader && \
