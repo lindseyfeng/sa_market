@@ -119,6 +119,25 @@ class TargetScaler:
              if self.transform == "asinh" else y)
         return (z - self.mu) / self.sd
 
+    def jacobian(self, z):
+        """|dp/dz| at a standardised target, for weighting the loss.
+
+        The metric is MAE in $/MWh but the loss lives in asinh space, and the
+        two are not the same objective: dp/dz = w * cosh(asinh((p-c)/w)), so one
+        unit of asinh-space error is worth 64 $/MWh in the calm band and
+        1,410 $/MWh on a spike -- measured on 2021, a factor of 22. An unweighted
+        asinh-space L1 therefore trains the model to ignore exactly the rows that
+        dominate the reported error, which is what it did: against a ridge it was
+        1.8% better in the calm band (68.6% of rows) and 5.0% worse on negative
+        prices, 5.2% worse on high prices.
+        """
+        if self.transform != "asinh":
+            return torch.ones_like(z)
+        dev = z.device
+        t = lambda v: torch.as_tensor(v, dtype=z.dtype, device=dev)
+        zz = (z * t(self.sd) + t(self.mu)).clamp(t(self.lo), t(self.hi))
+        return (t(self.w) * torch.cosh(zz)).abs()
+
     def inverse(self, p):
         """p: (B, T) standardised -> $/MWh"""
         dev = p.device
@@ -173,7 +192,25 @@ def _elem(args):
     return lambda a, b: F.smooth_l1_loss(a, b, beta=args.huber_beta)
 
 
-def joint_loss(p, y, args, model, arm, dev_sd, n_price):
+def _weights(y, args, scaler, n_price):
+    """Per-sample weight that turns an asinh-space loss into a price-space one.
+
+    alpha = 0 reproduces the unweighted objective exactly, so it stays available
+    as the ablation; alpha = 1 matches the metric to first order; in between
+    tempers it, because the spike gradients are 22x larger and asinh was
+    introduced to stop exactly that from dominating. Weights are taken at the
+    truth, not the prediction, so this reweights the data rather than bending
+    the loss.
+    """
+    if not args.w_jacobian or scaler is None:
+        return None
+    with torch.no_grad():
+        j = scaler.jacobian(y[:, :n_price])
+        j = j / j.mean().clamp(min=1e-8)          # keep the loss scale comparable
+        return j.pow(args.w_jacobian)
+
+
+def joint_loss(p, y, args, model, arm, dev_sd, n_price, scaler=None):
     """The primary term, plus every regulariser this problem actually argues for.
 
     Each term is reported as well as summed, because a term whose magnitude is
@@ -181,7 +218,13 @@ def joint_loss(p, y, args, model, arm, dev_sd, n_price):
     """
     el = _elem(args)
     pp, yp = p[:, :n_price], y[:, :n_price]
-    parts = {"price": el(pp, yp)}
+    wt = _weights(y, args, scaler, n_price)
+    if wt is None:
+        parts = {"price": el(pp, yp)}
+    else:
+        # Weighted mean of the pointwise loss, so --loss still selects its shape.
+        r = (pp - yp).abs() if args.loss == "l1" else (pp - yp).pow(2)
+        parts = {"price": (r * wt).mean()}
 
     if args.w_dev:
         # Standardised by the deviations' own train scale, so w_dev = 1 means
@@ -333,7 +376,8 @@ def run_arm(arm, seed, data, args, device):
         for x, y in dl["train"]:
             x, y = cut(x).to(device), y.to(device)
             p = model(x)[3]
-            loss, parts = joint_loss(p, y, args, model, arm, dev_sd, n_price)
+            loss, parts = joint_loss(p, y, args, model, arm, dev_sd,
+                                     n_price, scaler)
             if decompose:
                 dec = model.decomposer.decomposer
                 loss = loss + 0.05 * dec.bandwidth_loss(x[:, :1]) \
@@ -394,7 +438,8 @@ def run_arm(arm, seed, data, args, device):
            "n_feat": data["n_feat"], "n_targets": len(targets),
            "n_price": n_price,
            "head": tag, "context": ctx, "xfilter": xfilter,
-           "loss": {"kind": args.loss, "coupling_init": c_init,
+           "loss": {"kind": args.loss, "w_jacobian": args.w_jacobian,
+                    "coupling_init": c_init,
                     "w_dev": args.w_dev, "w_aux": args.w_aux,
                     "w_bias": args.w_bias, "w_sparse": args.w_sparse,
                     "huber_beta": args.huber_beta}}
@@ -471,6 +516,10 @@ def main():
                          "ramp, scarcity). They never enter selection or any "
                          "reported metric; they exist to shape the trunk and to "
                          "put gradient on their own coupling rows")
+    ap.add_argument("--w-jacobian", type=float, default=0.0,
+                    help="exponent on the |dp/dz| sample weight. 0 is the "
+                         "unweighted asinh-space loss; 1 matches MAE in $/MWh to "
+                         "first order; the spike Jacobian is 22x the calm one")
     ap.add_argument("--w-bias", type=float, default=0.0,
                     help="penalty on the batch-mean residual per region, against "
                          "the constant offset this model is known to carry")
