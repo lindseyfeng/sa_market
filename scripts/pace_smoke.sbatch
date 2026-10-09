@@ -32,9 +32,13 @@
 #SBATCH --job-name=sa-smoke
 #SBATCH --qos=embers
 #SBATCH --partition=gpu-l40s,gpu-a100,gpu-rtx6000,gpu-v100,gpu-h100
-#SBATCH --nodes=1 --ntasks-per-node=4 --gres=gpu:1
-#SBATCH --mem-per-cpu=8G
-#SBATCH --time=00:10:00
+# One core, one GPU. The first attempt asked for four and Slurm handed over
+# eight with 64 GB and a billing weight of 10,261, which is a large hole to wait
+# for. The work is a 650 k-parameter LSTM on a GPU; the CPU does nothing but
+# feed it. A smaller hole is a sooner hole.
+#SBATCH --nodes=1 --ntasks-per-node=1 --gres=gpu:1
+#SBATCH --mem-per-cpu=16G
+#SBATCH --time=00:05:00
 #SBATCH --output=logs/smoke_%j.out
 #SBATCH --mail-type=NONE
 
@@ -59,6 +63,6 @@ echo "SLURM gave: $SLURM_JOB_PARTITION on $SLURMD_NODENAME"
   --arms "single:SA1_price,joint" \
   --w-dev 1.0 --w-bias 0.1 --w-sparse 1e-4 --loss l1 \
   --seeds 1 --epochs 3 --max-windows 2000 \
-  --threads 4 --workers 2 \
+  --threads 1 --workers 0 \
   --out results/smoke_gpu.json --save-preds preds/smoke_gpu
 echo SMOKE_DONE
