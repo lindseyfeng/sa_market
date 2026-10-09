@@ -19,9 +19,19 @@
 # still placed the job in gpu-v100, because partitions are defined by node
 # feature, not chosen by gres. The partitions have to be listed explicitly for
 # the scheduler to consider all of their gaps.
+# embers, not inferno. The account carries both; inferno is the default, has
+# priority 250,000 and bills the balance, and that is what put this job behind
+# the ~1,000 paid jobs pending across the GPU partitions. embers is the
+# backfill tier: priority 0, NoReserve, an 8-hour ceiling, preemptible by
+# inferno -- and it does not draw on the 285 credits. For a ten-minute probe
+# that trade is free money: if it is preempted, resubmit.
+#
+# Partitions ordered by what is actually idle right now, measured per node from
+# AllocTRES rather than from partition state: gpu-l40s has 11 free GPUs across
+# four nodes, gpu-a100 has 2. An L40S is more than this model can use.
 #SBATCH --job-name=sa-smoke
-#SBATCH --qos=inferno
-#SBATCH --partition=gpu-v100,gpu-a100,gpu-h100,gpu-h200,gpu-l40s
+#SBATCH --qos=embers
+#SBATCH --partition=gpu-l40s,gpu-a100,gpu-rtx6000,gpu-v100,gpu-h100
 #SBATCH --nodes=1 --ntasks-per-node=4 --gres=gpu:1
 #SBATCH --mem-per-cpu=8G
 #SBATCH --time=00:10:00
