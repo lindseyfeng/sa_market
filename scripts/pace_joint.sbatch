@@ -26,7 +26,7 @@
 # Asking for four cores had Slurm hand over eight with 64 GB and a billing
 # weight of 10,261. The CPU only feeds the GPU here, so that was a large hole
 # waited for to no purpose. `interactive-gpu` is not submittable with sbatch.
-#SBATCH --partition=gpu-a100,gpu-v100,gpu-h100,gpu-l40s,gpu-rtx6000
+#SBATCH --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000
 #SBATCH --nodes=1 --ntasks-per-node=1 --gres=gpu:1
 #SBATCH --mem-per-cpu=32G
 #SBATCH --time=12:00:00

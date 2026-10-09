@@ -17,6 +17,11 @@
 #
 # One seed. Three would triple the cost for a margin this sweep is not yet
 # trying to resolve; seeds come after an arm is worth repeating.
+# No gpu-v100. A V100 is compute capability 7.0 and this torch (2.14.1+cu130)
+# ships kernels for CC >= 7.5 only, so a job scheduled there dies in five
+# seconds with "does not include kernels for this GPU". Three arms were lost to
+# it. Rebuilding against cu126 would fix it and buy nothing: the model is a
+# 650 k-parameter LSTM and an A100 or L40S runs it fine.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p logs results preds
@@ -42,7 +47,7 @@ for arm in $ARMS; do
   tag=$(echo "$arm" | tr '/:+' '___')
   sbatch --account="$ACCT" --qos=inferno \
     --job-name="h${H}_${tag}" \
-    --partition=gpu-a100,gpu-v100,gpu-h100,gpu-l40s,gpu-rtx6000 \
+    --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000 \
     --nodes=1 --ntasks-per-node=1 --gres=gpu:1 --mem-per-cpu=32G \
     --time="${WALL:-00:25:00}" \
     --output="logs/h${H}_${tag}_%j.out" \

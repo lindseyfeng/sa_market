@@ -31,7 +31,7 @@
 # four nodes, gpu-a100 has 2. An L40S is more than this model can use.
 #SBATCH --job-name=sa-smoke
 #SBATCH --qos=embers
-#SBATCH --partition=gpu-l40s,gpu-a100,gpu-rtx6000,gpu-v100,gpu-h100
+#SBATCH --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000
 # One core, one GPU. The first attempt asked for four and Slurm handed over
 # eight with 64 GB and a billing weight of 10,261, which is a large hole to wait
 # for. The work is a 650 k-parameter LSTM on a GPU; the CPU does nothing but
