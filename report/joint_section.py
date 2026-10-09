@@ -38,12 +38,11 @@ def _dm(ea, eb):
     return dm(ea, eb)
 
 
-def section():
+def section(heading="## 11. Joint multi-region forecasting, and what the decomposition is for"):
     P = _preds(["preds/pace_h6/*.npz", "preds/jac/*.npz", "preds/fj/*.npz",
                 "preds/final/*.npz", "preds/baselines_h6/*.npz"])
     if "arx_window" not in P:
-        return ["## 11. Joint multi-region forecasting", "",
-                "_Pending: no predictions under `preds/`._"]
+        return [heading, "", "_Pending: no predictions under `preds/`._"]
     y = P["arx_window"][1]
     P = {k: v for k, v in P.items() if len(v[1]) == len(y)}
     mae = {k: float(np.abs(p - t).mean()) for k, (p, t) in P.items()}
@@ -88,7 +87,7 @@ def section():
         "f0.75": "FiLM plus Jacobian 0.75",
     }
 
-    o = ["## 11. Joint multi-region forecasting, and what the decomposition is for", "",
+    o = [heading, "",
          "Predict all five NEM regional prices at once rather than SA1 alone, at "
          "h=6 on the 2021 test year, one seed, 30 epochs. Every neural arm shares "
          "the window list, the objective and the seed. Diebold-Mariano is "

@@ -4,9 +4,11 @@ Whether signal decomposition actually helps electricity price forecasting, and
 what the published gains are really made of. AEMO NEM, South Australia,
 half-hourly RRP, train 2018 / test 2019.
 
-**Start with [`FINDINGS.md`](FINDINGS.md)** — the whole picture, including the
-leakage result the project rests on, the architecture, and every claim we have
-since had to retract. [`attic/RESULTS-superseded.md`](attic/RESULTS-superseded.md) is the older running log.
+**Start with [`FINDINGS.md`](FINDINGS.md)** — the two results that hold, and the
+current state of the joint multi-region work. The long record is
+[`attic/FINDINGS-full.md`](attic/FINDINGS-full.md); both regenerate from the same
+result files. [`PITFALLS.md`](PITFALLS.md) is what to read before running on
+PACE or trusting a margin. [`attic/RESULTS-superseded.md`](attic/RESULTS-superseded.md) is the older running log.
 
 ## Layout
 
@@ -34,7 +36,8 @@ python3 -m decomp.decomp_zoo --methods ewt,emd,wpt,bank  # the other families
 python3 -m analysis.basis_stability --n 1500             # cross-window basis drift
 ./scripts/zoo_then_dose.sh                               # decomposition families, then the churn ladder
 ./scripts/spatial.sh                                     # horizon x exogenous-window 2x2
-python3 -m report.report_findings                        # regenerate FINDINGS.md
+python3 -m report.findings                               # regenerate FINDINGS.md
+python3 -m report.report_findings                        # regenerate attic/FINDINGS-full.md
 ```
 
 Both experiment runners **resume**: every `(arm, seed)` already in the result

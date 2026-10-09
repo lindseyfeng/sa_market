@@ -21,8 +21,14 @@ Second, the target FINDINGS measures on has had its hard part filtered out: the
 filter drops 1.6% of 2018 rising to 20.7% of 2022, almost all negative prices,
 and halves persistence on 2019 (26.29 to 14.37).
 
-[`FINDINGS.md`](FINDINGS.md) remains the record of the leakage and cost
-results, which ROUND2 does not touch. The older running log has been moved to
+[`FINDINGS.md`](FINDINGS.md) is kept short on purpose: the two results that
+hold, and the current state of the joint multi-region work. The long record --
+every arm, every decomposition family, every retraction, and the leakage and
+cost results in full -- is [`attic/FINDINGS-full.md`](attic/FINDINGS-full.md).
+Both regenerate from the same result files, so neither goes stale against the
+other. [`PITFALLS.md`](PITFALLS.md) is the operational companion: how to reach
+PACE, what decides queue time there, and the objective and baseline traps that
+cost the most time. The older running log has been moved to
 `attic/RESULTS-superseded.md` and carries a banner saying so -- it is kept only
 because FINDINGS and THREE_ARMS cite its section numbers, and several of its
 comparisons were later found confounded (VMD without its residual; epoch
@@ -120,7 +126,8 @@ python3 -m decomp.decomp_zoo --methods ewt,emd,wpt,bank
 python3 -m analysis.basis_stability --n 1500
 ./scripts/zoo_then_dose.sh        # decomposition families, then the churn ladder
 ./scripts/spatial.sh              # horizon x exogenous-window 2x2
-python3 -m report.report_findings # regenerate FINDINGS.md
+python3 -m report.findings        # regenerate FINDINGS.md (short)
+python3 -m report.report_findings # regenerate attic/FINDINGS-full.md
 python3 -m report.plot_bands      # regenerate the band-comparison figure
 ```
 

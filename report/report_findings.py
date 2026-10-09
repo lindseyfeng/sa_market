@@ -762,15 +762,11 @@ A("- Claims 1 and 2 of `attic/RESULTS-superseded.md` are untouched by any of thi
   "depend on epoch selection, on the residual channel, or on the delivery "
   "path.")
 
-# Section 11 lives in its own module and reads the prediction files directly;
-# it is appended here so the whole document stays regenerable from one command.
-try:
-    from report.joint_section import section as _joint_section
-    L += [""] + _joint_section()
-except Exception as _e:                      # a missing preds/ should not block
-    L += ["", "## 11. Joint multi-region forecasting", "",
-          f"_Pending: {_e}_"]
-
-open("FINDINGS.md", "w").write("\n".join(L) + "\n")
-print(f"FINDINGS.md written: four-arm {len(FOUR)}, zoo {len(STAB)}, "
+# This is the long record: every arm, every zoo family, every retraction. It is
+# no longer FINDINGS.md, which is kept short on purpose -- see report/findings.py.
+# Nothing here is lost; both documents regenerate from the same result files.
+import os as _os
+_os.makedirs("attic", exist_ok=True)
+open("attic/FINDINGS-full.md", "w").write("\n".join(L) + "\n")
+print(f"attic/FINDINGS-full.md written: four-arm {len(FOUR)}, zoo {len(STAB)}, "
       f"dose {len(DOSE)}, spatial {len(SPAT)}")
