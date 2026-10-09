@@ -1,0 +1,98 @@
+[
+  {
+    "arm": "vmd_price",
+    "seed": 1,
+    "val_mae": 14.034337132901104,
+    "test_mae": 14.560940277692184,
+    "test_rmse": 26.539398935233002,
+    "epoch": 12,
+    "test_mae_cherry": 14.537917727868534,
+    "test_rmse_cherry": 26.298332721467435,
+    "epoch_cherry": 20,
+    "n_feat": 8
+  },
+  {
+    "arm": "nvmd_st",
+    "seed": 1,
+    "val_mae": 13.248881555228294,
+    "test_mae": 14.478825445082581,
+    "test_rmse": 25.278431494318532,
+    "epoch": 9,
+    "test_mae_cherry": 14.293965963715488,
+    "test_rmse_cherry": 24.69849568289591,
+    "epoch_cherry": 17,
+    "n_feat": 33
+  },
+  {
+    "arm": "vmd_panel",
+    "seed": 1,
+    "val_mae": 14.949715146992325,
+    "test_mae": 17.81878774698498,
+    "test_rmse": 28.195889091227407,
+    "epoch": 5,
+    "test_mae_cherry": 17.81878774698498,
+    "test_rmse_cherry": 28.195889091227407,
+    "epoch_cherry": 5,
+    "n_feat": 215
+  },
+  {
+    "arm": "nvmd_temporal",
+    "seed": 1,
+    "val_mae": 13.876500171098945,
+    "test_mae": 14.220232813566634,
+    "test_rmse": 25.95904733798176,
+    "epoch": 6,
+    "test_mae_cherry": 14.187854937210824,
+    "test_rmse_cherry": 25.522828502623838,
+    "epoch_cherry": 13,
+    "n_feat": 33
+  },
+  {
+    "arm": "vmd_price",
+    "seed": 2,
+    "val_mae": 14.099509121712456,
+    "test_mae": 14.48706494673942,
+    "test_rmse": 26.1735755067208,
+    "epoch": 11,
+    "test_mae_cherry": 14.472595370394512,
+    "test_rmse_cherry": 26.358141870266188,
+    "epoch_cherry": 18,
+    "n_feat": 8
+  },
+  {
+    "arm": "nvmd_st",
+    "seed": 2,
+    "val_mae": 13.348093067895727,
+    "test_mae": 14.481576226984412,
+    "test_rmse": 24.96444835916978,
+    "epoch": 10,
+    "test_mae_cherry": 14.327326328314625,
+    "test_rmse_cherry": 24.801484071391922,
+    "epoch_cherry": 18,
+    "n_feat": 33
+  },
+  {
+    "arm": "vmd_panel",
+    "seed": 2,
+    "val_mae": 15.581840482315702,
+    "test_mae": 18.2469303316283,
+    "test_rmse": 28.937027480697,
+    "epoch": 4,
+    "test_mae_cherry": 18.225681534554194,
+    "test_rmse_cherry": 29.751521795539897,
+    "epoch_cherry": 9,
+    "n_feat": 215
+  },
+  {
+    "arm": "nvmd_temporal",
+    "seed": 2,
+    "val_mae": 13.8794100943794,
+    "test_mae": 14.106307427860001,
+    "test_rmse": 25.870455564606846,
+    "epoch": 12,
+    "test_mae_cherry": 14.106307427860001,
+    "test_rmse_cherry": 25.870455564606846,
+    "epoch_cherry": 12,
+    "n_feat": 33
+  }
+]

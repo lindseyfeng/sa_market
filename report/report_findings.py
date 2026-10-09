@@ -63,6 +63,16 @@ A(f"One such verdict has already moved. On the current results the ranges are "
   f"{_rng}, so **decomposing inside the forecaster no longer cleanly beats the "
   f"decompose-then-forecast pipeline** -- that separation held on two seeds and "
   f"does not on three. Section 6.\n")
+A("Section 11 adds the control that was always missing: the same head reading "
+  "the raw window, with no decomposition at all. Against it **the band "
+  "decomposition is worth -6.8% at h=6, DM p=0.000**, and that splits into two "
+  "halves -- narrowing 37 channels to 16 is worth -3.5%, and making those 16 "
+  "channels *bands* rather than a learned projection is worth a further -3.4%. "
+  "What the decomposition is not is information: a partition-of-unity bank is an "
+  "invertible linear map, and ridge on bands against ridge on the raw window "
+  "agree to **0.0000 $/MWh**. It is a capacity limit plus a shortcut past the "
+  "LSTM\'s sequential bottleneck, and against a ridge the whole stack still only "
+  "ties.\n")
 
 A("\n## 1. The leakage finding\n")
 A("This is the result the project rests on, and nothing in the later work "
@@ -751,6 +761,15 @@ A("- The forward-exogenous condition in the spatial experiment uses "
 A("- Claims 1 and 2 of `attic/RESULTS-superseded.md` are untouched by any of this. They do not "
   "depend on epoch selection, on the residual channel, or on the delivery "
   "path.")
+
+# Section 11 lives in its own module and reads the prediction files directly;
+# it is appended here so the whole document stays regenerable from one command.
+try:
+    from report.joint_section import section as _joint_section
+    L += [""] + _joint_section()
+except Exception as _e:                      # a missing preds/ should not block
+    L += ["", "## 11. Joint multi-region forecasting", "",
+          f"_Pending: {_e}_"]
 
 open("FINDINGS.md", "w").write("\n".join(L) + "\n")
 print(f"FINDINGS.md written: four-arm {len(FOUR)}, zoo {len(STAB)}, "

@@ -1,0 +1,26 @@
+[
+  {
+    "arm": "nvmd_st",
+    "seed": 1,
+    "val_mae": 30.19316830031894,
+    "test_mae": 46.21228104933802,
+    "test_rmse": 258.3657004878407,
+    "epoch": 5,
+    "test_mae_cherry": 46.181904797965664,
+    "test_rmse_cherry": 258.1647685177647,
+    "epoch_cherry": 8,
+    "n_feat": 33
+  },
+  {
+    "arm": "nvmd_temporal",
+    "seed": 1,
+    "val_mae": 30.231927535284502,
+    "test_mae": 51.99414291037971,
+    "test_rmse": 259.8171958141033,
+    "epoch": 1,
+    "test_mae_cherry": 51.99414291037971,
+    "test_rmse_cherry": 259.8171958141033,
+    "epoch_cherry": 1,
+    "n_feat": 33
+  }
+]

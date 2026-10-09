@@ -1,0 +1,26 @@
+[
+  {
+    "arm": "lstm",
+    "seed": 1,
+    "val_mae": 22.769916015625,
+    "test_mae": 26.163275390625,
+    "test_rmse": 36.29158304621059,
+    "epoch": 1,
+    "test_mae_cherry": 26.163275390625,
+    "test_rmse_cherry": 36.29158304621059,
+    "epoch_cherry": 1,
+    "n_feat": 1
+  },
+  {
+    "arm": "lstm_panel",
+    "seed": 1,
+    "val_mae": 22.949255859375,
+    "test_mae": 25.53398046875,
+    "test_rmse": 36.14162939049649,
+    "epoch": 1,
+    "test_mae_cherry": 25.53398046875,
+    "test_rmse_cherry": 36.14162939049649,
+    "epoch_cherry": 1,
+    "n_feat": 33
+  }
+]

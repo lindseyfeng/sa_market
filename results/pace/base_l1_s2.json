@@ -1,0 +1,14 @@
+[
+  {
+    "arm": "vmd_price_res",
+    "seed": 2,
+    "val_mae": 13.573848385712017,
+    "test_mae": 14.052687946801047,
+    "test_rmse": 26.339473161828003,
+    "epoch": 20,
+    "test_mae_cherry": 14.034196598090015,
+    "test_rmse_cherry": 26.231283651988143,
+    "epoch_cherry": 21,
+    "n_feat": 9
+  }
+]
