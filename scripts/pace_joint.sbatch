@@ -24,14 +24,17 @@ set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs results preds
 
-module load anaconda3
-source activate "${ENV_NAME:-samkt}"
+# Call the environment's interpreter directly. `source activate <env>` does not
+# reliably switch interpreters in a non-interactive shell: it silently left the
+# base python 3.10 in place, so pip installed torch into ~/.local and put 5.2 GB
+# into a 20 GB home directory instead of the 15 TB scratch the env lives on.
+PY="$HOME/scratch/.conda/envs/${ENV_NAME:-samkt}/bin/python"
 
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-python -c "import torch; print('cuda available:', torch.cuda.is_available())"
+"$PY" -c "import torch; print('cuda available:', torch.cuda.is_available())"
 
 # --threads matches the cores Slurm gave us; a V100 reserves 12.
-python -u -m experiments.run_joint \
+"$PY" -u -m experiments.run_joint \
   --panel data/raw/compound_joint_2018_2022.csv \
   --train-year 2018,2019,2020 --test-year 2021 \
   --horizon "${HORIZON:-6}" \

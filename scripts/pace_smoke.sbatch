@@ -10,27 +10,38 @@
 #
 # 4 cores, not the 12 the ICE guidance suggests: that ratio is an ICE rule and
 # this model is one small LSTM, so paying for cores it cannot use would only
-# distort the rate measurement. --time is a hard 15-minute cap.
+# distort the rate measurement.
+#
+# No GPU type is named. Every GPU partition is deep -- 153 to 245 jobs pending
+# across v100/a100/h100/h200/l40s -- so pinning V100 means queueing behind its
+# 194 alone, and this model (650 k parameters, 96 steps) cannot use an A100 any
+# better than a V100. A ten-minute, four-core, one-GPU job is the shape Slurm's
+# backfill slots into gaps, and leaving the type open puts every partition's
+# gaps in play.
 #SBATCH --job-name=sa-smoke
 #SBATCH --qos=inferno
-#SBATCH --nodes=1 --ntasks-per-node=4 --gres=gpu:V100:1
+#SBATCH --nodes=1 --ntasks-per-node=4 --gres=gpu:1
 #SBATCH --mem-per-cpu=8G
-#SBATCH --time=00:15:00
+#SBATCH --time=00:10:00
 #SBATCH --output=logs/smoke_%j.out
 #SBATCH --mail-type=NONE
 
 set -x
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs results preds
-module load anaconda3/2023.03
-source activate samkt
+# Call the environment's interpreter directly. `source activate <env>` does not
+# reliably switch interpreters in a non-interactive shell: it silently left the
+# base python 3.10 in place, so pip installed torch into ~/.local and put 5.2 GB
+# into a 20 GB home directory instead of the 15 TB scratch the env lives on.
+PY="$HOME/scratch/.conda/envs/${ENV_NAME:-samkt}/bin/python"
 
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
-python -c "import torch; print('cuda', torch.cuda.is_available(), torch.version.cuda)"
+echo "SLURM gave: $SLURM_JOB_PARTITION on $SLURMD_NODENAME"
+"$PY" -c "import torch; print('cuda', torch.cuda.is_available(), torch.version.cuda)"
 
 # 2,000 train windows and 3 epochs: enough to time an epoch and prove the GPU is
 # actually being used, far too few for any number to mean anything.
-python -u -m experiments.run_joint \
+"$PY" -u -m experiments.run_joint \
   --panel data/raw/compound_joint_2018_2022.csv \
   --train-year 2018,2019,2020 --test-year 2021 --horizon 6 \
   --arms "single:SA1_price,joint" \

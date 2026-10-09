@@ -20,16 +20,18 @@ export PIP_CACHE_DIR="$HOME/scratch/.cache/pip"
 
 module load anaconda3/2023.03
 conda create -y -n "$ENV_NAME" python=3.12
-source activate "$ENV_NAME"
+# Not `source activate`: in a non-interactive shell it leaves the base
+# interpreter in place without saying so, and pip then installs into ~/.local.
+PY="$HOME/scratch/.conda/envs/$ENV_NAME/bin/python"
 # Plain PyPI. The Linux x86_64 wheel there is already CUDA-enabled, and
 # `--index-url https://download.pytorch.org/whl/cu124` is worse than
 # unnecessary: it *replaces* PyPI, so torch's own build dependencies cannot be
 # resolved and the install dies on `No matching distribution found for
 # flit_core`. Use --extra-index-url if a specific CUDA build is ever needed.
-pip install torch numpy pandas scipy
-python -c "import torch; assert torch.version.cuda, 'got a CPU-only torch'"
+"$PY" -m pip install torch numpy pandas scipy
+"$PY" -c "import torch; assert torch.version.cuda, 'got a CPU-only torch'"
 
-python -c "import torch; print('torch', torch.__version__, '| cuda build', torch.version.cuda)"
+"$PY" -c "import torch; print('torch', torch.__version__, '| cuda build', torch.version.cuda)"
 echo
 echo "The panel is gitignored because it is rebuildable, but its source is not"
 echo "in the repo. Copy it over from the laptop, then build the joint panel:"
