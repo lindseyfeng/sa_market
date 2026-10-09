@@ -304,6 +304,9 @@ def run_arm(arm, seed, data, args, device):
     # than the prices, because after the common mode is removed the other
     # regional prices carry 0.4-1.9% of the variance at any scale.
     expand = tuple(data["expand_idx"]) if "exp" in bits else ()
+    # "red16" keeps the width the band pathway produces and drops the band
+    # structure, which is the only way to tell capacity from coordinates.
+    reduce_to = next((int(b[3:]) for b in bits if b.startswith("red")), 0)
     base = parts[0]
     # "panel" is the no-decomposition control: the same head reading the raw
     # window. It is the only arm that isolates the decomposition, because a band
@@ -328,7 +331,7 @@ def run_arm(arm, seed, data, args, device):
         lstm_hidden=args.hidden, adapt=0.0, coupling=(base == "joint"),
         coupling_init=(c_init if base == "joint" else 0.0), head=head,
         decompose=decompose, n_chan=data["n_feat"],
-        xfilter=xfilter, context=ctx, expand=expand,
+        xfilter=xfilter, context=ctx, expand=expand, reduce_to=reduce_to,
     ).to(device)
     # "joint@0.01" is the joint arm with its off-diagonal coupling seeded at
     # N(0, 0.01). Carrying it in the arm name rather than a global flag lets both
@@ -353,6 +356,9 @@ def run_arm(arm, seed, data, args, device):
     # than the prices, because after the common mode is removed the other
     # regional prices carry 0.4-1.9% of the variance at any scale.
     expand = tuple(data["expand_idx"]) if "exp" in bits else ()
+    # "red16" keeps the width the band pathway produces and drops the band
+    # structure, which is the only way to tell capacity from coordinates.
+    reduce_to = next((int(b[3:]) for b in bits if b.startswith("red")), 0)
     base = parts[0]
     # "panel" is the no-decomposition control: the same head reading the raw
     # window. It is the only arm that isolates the decomposition, because a band
@@ -390,7 +396,7 @@ def run_arm(arm, seed, data, args, device):
             p = model(x)[3]
             loss, parts = joint_loss(p, y, args, model, arm, dev_sd,
                                      n_price, scaler)
-            if decompose:
+            if decompose and not reduce_to:
                 dec = model.decomposer.decomposer
                 loss = loss + 0.05 * dec.bandwidth_loss(x[:, :1]) \
                             + 1.0 * dec.separation_loss(x[:, :1])
@@ -430,7 +436,7 @@ def run_arm(arm, seed, data, args, device):
         blob = {"state": state, "arm": arm, "seed": seed, "targets": targets,
                 "names": names, "head": head, "xfilter": xfilter,
                 "context": ctx, "expand": list(expand), "decompose": decompose}
-        if decompose:
+        if decompose and not reduce_to:
             # The bank's own parameters, in physical units, so the learned band
             # structure can be read without rebuilding the model.
             with torch.no_grad():
@@ -474,8 +480,9 @@ def run_arm(arm, seed, data, args, device):
                     "w_dev": args.w_dev, "w_aux": args.w_aux,
                     "w_bias": args.w_bias, "w_sparse": args.w_sparse,
                     "huber_beta": args.huber_beta}}
-    out["decompose"] = decompose
-    if base == "joint" and decompose:
+    out["decompose"] = decompose and not reduce_to
+    out["reduce_to"] = reduce_to
+    if base == "joint" and decompose and not reduce_to:
         out["coupling"] = coupling_report(model, data, names, targets)
     return out
 

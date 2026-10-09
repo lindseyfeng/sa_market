@@ -163,7 +163,8 @@ class JointForecaster(nn.Module):
                  adapt: float = 0.0, coupling: bool = True,
                  coupling_init: float = 0.0, head: str = "lstm",
                  decompose: bool = True, n_chan: int = None,
-                 xfilter: bool = False, context: int = None, expand=()):
+                 xfilter: bool = False, context: int = None, expand=(),
+                 reduce_to: int = 0):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -190,8 +191,13 @@ class JointForecaster(nn.Module):
                 coupling_init=coupling_init, xfilter=xfilter, context=context,
                 expand=expand,
             )
-        n_in = (((3 if xfilter else 2) + len(expand)) * K) if decompose \
-            else (n_chan or C)
+        self.reduce = None
+        if reduce_to:
+            self.reduce = nn.Conv1d(n_chan or C, reduce_to, 1)
+            self.decompose = False
+        n_in = reduce_to if reduce_to else (
+            (((3 if xfilter else 2) + len(expand)) * K) if decompose
+            else (n_chan or C))
         if head == "lstm":
             self.lstm = nn.LSTM(n_in, lstm_hidden, lstm_layers, batch_first=True,
                                 bidirectional=True,
@@ -214,6 +220,17 @@ class JointForecaster(nn.Module):
             raise ValueError(f"unknown head {head!r}")
 
     def forward(self, x):
+        if self.reduce is not None:
+            # The control that separates the two things the decomposition does.
+            # It reduces 37 channels to the same width the band pathway hands
+            # over, but with a plain learned projection applied per timestep --
+            # so it keeps the dimension reduction and drops the non-causal
+            # filtering. If most of the band pathway's 6.8% survives here, the
+            # mechanism is capacity; if it does not, the mechanism is that band
+            # masks carry whole-window information at every step and save the
+            # LSTM from integrating 96 of them.
+            feat = self.reduce(x).unsqueeze(1).expand(-1, self.T, -1, -1)
+            return feat, None, None, self._read(feat)
         if self.decompose:
             feat, masks = self.decomposer(x)               # (B, T, 2K, L)
         else:
@@ -223,13 +240,15 @@ class JointForecaster(nn.Module):
             # per-band projection -- so this control is not handicapped.
             feat = x.unsqueeze(1).expand(-1, self.T, -1, -1)
             masks = None
+        return feat, masks, None, self._read(feat)
+
+    def _read(self, feat):
         B, T, C2, L = feat.shape
         if self.kind == "linear":
-            y = self.proj(feat.reshape(B * T, C2 * L)).reshape(B, T) + self.region
-            return feat, masks, None, y
+            return self.proj(feat.reshape(B * T, C2 * L)).reshape(B, T) + self.region
         h, _ = self.lstm(feat.reshape(B * T, C2, L).permute(0, 2, 1))
-        z = h[:, -1].reshape(B, T, -1) + self.region       # (B, T, 2H)
-        return feat, masks, None, self.head(z).squeeze(-1)  # (B, T)
+        z = h[:, -1].reshape(B, T, -1) + self.region
+        return self.head(z).squeeze(-1)
 
 
 if __name__ == "__main__":
