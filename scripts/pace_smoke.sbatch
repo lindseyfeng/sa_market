@@ -12,14 +12,16 @@
 # this model is one small LSTM, so paying for cores it cannot use would only
 # distort the rate measurement.
 #
-# No GPU type is named. Every GPU partition is deep -- 153 to 245 jobs pending
-# across v100/a100/h100/h200/l40s -- so pinning V100 means queueing behind its
-# 194 alone, and this model (650 k parameters, 96 steps) cannot use an A100 any
-# better than a V100. A ten-minute, four-core, one-GPU job is the shape Slurm's
-# backfill slots into gaps, and leaving the type open puts every partition's
-# gaps in play.
+# Every GPU partition is deep -- 153 to 245 jobs pending across
+# v100/a100/h100/h200/l40s -- and this model (650 k parameters, 96 steps) cannot
+# use an H200 any better than a V100, so the only thing that matters is which
+# gap opens first. Dropping the GPU *type* from --gres was not enough: Slurm
+# still placed the job in gpu-v100, because partitions are defined by node
+# feature, not chosen by gres. The partitions have to be listed explicitly for
+# the scheduler to consider all of their gaps.
 #SBATCH --job-name=sa-smoke
 #SBATCH --qos=inferno
+#SBATCH --partition=gpu-v100,gpu-a100,gpu-h100,gpu-h200,gpu-l40s
 #SBATCH --nodes=1 --ntasks-per-node=4 --gres=gpu:1
 #SBATCH --mem-per-cpu=8G
 #SBATCH --time=00:10:00
