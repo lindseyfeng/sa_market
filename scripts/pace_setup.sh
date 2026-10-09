@@ -9,17 +9,25 @@
 set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-samkt}"
-ln -sfn "$HOME/scratch/.conda" "$HOME/.conda" 2>/dev/null || {
-  mkdir -p "$HOME/scratch/.conda"; ln -sfn "$HOME/scratch/.conda" "$HOME/.conda"; }
+# home is 20 GB and half of it is already gone; a torch env is ~3 GB.
+if [ ! -L "$HOME/.conda" ]; then
+  mkdir -p "$HOME/scratch/.conda"
+  cp -a "$HOME/.conda/." "$HOME/scratch/.conda/" 2>/dev/null || true
+  rm -rf "$HOME/.conda" && ln -s "$HOME/scratch/.conda" "$HOME/.conda"
+fi
+mkdir -p "$HOME/scratch/.cache/pip"
+export PIP_CACHE_DIR="$HOME/scratch/.cache/pip"
 
-module load anaconda3
+module load anaconda3/2023.03
 conda create -y -n "$ENV_NAME" python=3.12
 source activate "$ENV_NAME"
-# The CUDA wheel, not the default CPU one. cu124 matches the drivers on the
-# A100/H100 nodes at the time of writing; check `nvidia-smi` on a GPU node if
-# torch reports no CUDA.
-pip install --quiet torch --index-url https://download.pytorch.org/whl/cu124
-pip install --quiet numpy pandas scipy
+# Plain PyPI. The Linux x86_64 wheel there is already CUDA-enabled, and
+# `--index-url https://download.pytorch.org/whl/cu124` is worse than
+# unnecessary: it *replaces* PyPI, so torch's own build dependencies cannot be
+# resolved and the install dies on `No matching distribution found for
+# flit_core`. Use --extra-index-url if a specific CUDA build is ever needed.
+pip install torch numpy pandas scipy
+python -c "import torch; assert torch.version.cuda, 'got a CPU-only torch'"
 
 python -c "import torch; print('torch', torch.__version__, '| cuda build', torch.version.cuda)"
 echo
