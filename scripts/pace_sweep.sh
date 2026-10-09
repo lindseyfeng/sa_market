@@ -50,7 +50,7 @@ for arm in $ARMS; do
         --w-dev 1.0 --w-bias 0.1 --w-sparse 1e-4 --loss l1 \
         --threads 1 --workers 0 \
         --save-preds preds/h${H} --out results/h${H}_${tag}.json" \
-    | sed "s/^/  $arm -> /"
+    | while read -r line; do printf '  %-26s %s\n' "$arm" "$line"; done
 done
 echo
 squeue -u "$USER" -o "%.10i %.26j %.3t %.6M %.16R"
