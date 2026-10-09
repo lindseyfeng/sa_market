@@ -136,6 +136,11 @@ remote home, or scp.
   Check `squeue` before submitting, not after.
 - **Check whether a job has already started before cancelling it.** One was
   killed 63 seconds in, four seconds before the line being waited for.
+- **Cancel the watcher when you cancel the job.** A waiter whose condition can
+  no longer come true polls forever; three of them were still spinning hours
+  later and were reaped by the OS under memory pressure. Watch on a condition
+  that also ends on failure -- "the result file exists *or* the queue is empty"
+  -- rather than on success alone.
 - Save checkpoints. Nothing did, for the whole session, which left every
   statement about "the learned bands" describing the geometric initialisation.
 
