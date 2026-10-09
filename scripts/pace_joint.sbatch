@@ -14,8 +14,21 @@
 # three seeds, longer schedules and loss sweeps the conclusions actually need.
 #SBATCH --job-name=sa-joint
 #SBATCH --qos=inferno
-#SBATCH --nodes=1 --ntasks-per-node=12 --gres=gpu:V100:1
-#SBATCH --mem-per-cpu=8G
+# One core and one GPU, with the type left open. Measured on this cluster, what
+# decides the wait is the size of the hole, not the QoS or the partition:
+#
+#   no GPU                    submit -> start   3 s
+#   8 cores + 1 GPU                            54 s
+#   1 core  + 1 GPU                         3 m 51 s   (started)
+#   embers (priority 0)                     still pending after 5 min
+#   pinned gpu-v100 / gpu-rtx6000           still pending after 5 min
+#
+# Asking for four cores had Slurm hand over eight with 64 GB and a billing
+# weight of 10,261. The CPU only feeds the GPU here, so that was a large hole
+# waited for to no purpose. `interactive-gpu` is not submittable with sbatch.
+#SBATCH --partition=gpu-a100,gpu-v100,gpu-h100,gpu-l40s,gpu-rtx6000
+#SBATCH --nodes=1 --ntasks-per-node=1 --gres=gpu:1
+#SBATCH --mem-per-cpu=32G
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/pace_%j.out
 #SBATCH --mail-type=NONE
@@ -42,6 +55,6 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
   --w-dev 1.0 --w-bias 0.1 --w-sparse 1e-4 \
   --loss "${LOSS:-l1}" \
   --seeds "${SEEDS:-1,2,3}" --epochs "${EPOCHS:-30}" --patience 30 \
-  --threads 12 --workers 4 \
+  --threads 1 --workers 0 \
   --save-preds "preds/pace_h${HORIZON:-6}" \
   --out "results/pace_h${HORIZON:-6}.json"
