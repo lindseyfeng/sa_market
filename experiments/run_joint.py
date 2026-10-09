@@ -203,7 +203,6 @@ def joint_loss(p, y, args, model, arm, dev_sd, n_price):
     if arm == "joint" and args.w_sparse:
         parts["sparse"] = args.w_sparse * model.decomposer.coupling.sparsity_loss()
 
-    dec = model.decomposer.decomposer
     return sum(parts.values()), parts
 
 
