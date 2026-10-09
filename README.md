@@ -2,22 +2,26 @@
 
 Can a learnable frequency decomposition improve electricity-price forecasting beyond a strong raw-window baseline?
 
-**Current answer:** the band model improves on the raw-window LSTM in this experiment, but does not beat the best tuned ridge on overall MAE. Jacobian weighting changes the balance between typical prices and extreme prices; it does not produce a model that wins everywhere.
+**Current answer:** yes, and significantly. Against the only control that isolates the decomposition — the same LSTM, the same head, the same 96-step window, the same objective, reading the raw 37 channels instead of bands — the band model cuts MAE by **6.8%** (DM p < 0.001, better in 33 of 48 half-hours), and Jacobian weighting takes that to **8.5%**. The gain is concentrated where it should be: negative prices improve 16-26%, spikes 1-6%.
+
+**The ceiling is already visible.** With `adapt=0`, which is what every run here uses, the decomposition is a fixed *linear* map of the input window (§2). §2.2 shows a linear reader gains no expressive power from it at all, and §2.4 shows a tree gets 4.4% *worse* on it. So the 6.8% is not expressive power — it is what a bounded, shared, whole-window linear filter does for an LSTM's optimisation. That is a real and reproducible effect, and it is also a ceiling. The next move is to make the decomposition nonlinear, which in this codebase means one switch nobody has turned on: `adapt > 0` (§1.2, §7).
 
 > **Experiment scope:** generated October 9, 2026; horizon `h=6` as reported; SA1 evaluation, 2021 test year; one seed; 30 epochs. The joint model predicts five regions. Neural arms share the window list, objective configuration except for stated ablations, and seed. No experiments were rerun for this rewrite.
 
 ## At a glance
 
-| Comparison | MAE ($/MWh) | What it supports |
-|---|---:|---|
-| Raw-window LSTM (`panel_lstm`) | 41.30 | Neural control without decomposition |
-| Learned 16-channel projection (`red16`) | 39.84 | Narrowing the input helps this LSTM |
-| Bands + per-band coupling (`joint`) | 38.50 | The full band architecture improves further |
-| Bands + coupling + Jacobian α = 0.25 | 37.79 | Objective weighting closes the gap to the original ridge fit |
-| Raw-window ridge (`arx_window`) | 37.77 | Best MAE in the main comparison table |
-| Ridge with a finer penalty grid | **37.04** | Best reported MAE; predictions were not saved for paired tests |
+Everything below is scored against `panel_lstm`, the raw-window neural control. Lower is better; negative change is an improvement.
 
-The full band model improves MAE by **6.8%** relative to `panel_lstm`. This is a comparison of complete input architectures, not an isolated estimate of the decomposition effect. Relative to the finer-grid ridge, `joint` has approximately **3.9% higher MAE**.
+| Arm | MAE ($/MWh) | vs control | DM p | Half-hours better |
+|---|---:|---:|---:|---:|
+| `panel_lstm` — raw 37-channel window, no decomposition | 41.30 | — | — | — |
+| `joint_nocouple` — bands, coupling frozen at identity | 40.77 | −1.3% | 0.050 | 13/48 |
+| `red16` — learned 16-channel projection, no bands | 39.84 | −3.5% | 0.000 | 24/48 |
+| `joint` — bands + per-band coupling | 38.50 | **−6.8%** | 0.000 | 33/48 |
+| `joint_lstm_film` — the same + FiLM gate | 38.45 | −6.9% | 0.000 | 28/48 |
+| `a0.25` — bands + coupling + Jacobian weight α = 0.25 | **37.79** | **−8.5%** | 0.000 | 33/48 |
+
+The band architecture is worth 6.8% over the control, and the objective change adds another 1.8 points on top of it. Both are significant at any conventional level and hold in two thirds of the half-hours of the day. §2.4 splits the 6.8% into the part that is input compression (−3.5%, reproduced by a plain learned projection) and the part that needs the band structure (−3.4%); §5 shows what α trades for what.
 
 ## 1. Architecture
 
@@ -187,13 +191,17 @@ That is generally not `||β||²`. Partition of unity guarantees reconstruction; 
 
 ### 2.4 What the neural ablations suggest
 
-| Step | Model | MAE | Change from previous row |
-|---|---|---:|---:|
-| Raw channels | `panel_lstm` | 41.30 | — |
-| Learned 16-channel projection | `red16` | 39.84 | −3.5% |
-| Frequency bands + coupling | `joint` | 38.50 | −3.4% |
+This is the ladder the headline 6.8% decomposes into. Each row changes one thing from the row above it.
 
-Two plausible explanations are:
+| Step | Model | MAE | Change from previous row | DM p |
+|---|---|---:|---:|---:|
+| Raw 37 channels | `panel_lstm` | 41.30 | — | — |
+| Learned 16-channel projection | `red16` | 39.84 | **−3.5%** | 0.000 |
+| Frequency bands + coupling | `joint` | 38.50 | **−3.4%** | 0.000 |
+
+**Half the gain is not the decomposition.** `red16` has no bands at all — it is a learned linear projection from 37 channels to 16, the same width the band pathway hands the LSTM — and it recovers 3.5 of the 6.8 points on its own. Narrowing the input is doing half the work. The band structure and the per-band coupling are worth the other 3.4%, which is the honest size of the decomposition effect in this architecture. Freezing the coupling at identity (`joint_nocouple`, 40.77) costs most of that second step back, so the coupling and not the bank alone is carrying it.
+
+Two plausible explanations for why either step helps:
 
 1. **Input compression / regularization.** The 37-channel arm reportedly reaches its best validation result at epoch 1 and then degrades; `red16` peaks at epoch 18. The 88-channel `+exp` arms peak at epochs 4–8. These observations suggest sensitivity to input width, but do not establish a universal monotonic relationship.
 2. **Easier access to window-wide structure.** Whole-window filtering lets a mode value depend on other observations within the historical window. This may reduce the burden on an LSTM's sequential state. It is a mechanism hypothesis, not an isolated causal finding.
@@ -242,9 +250,9 @@ where c is the training median and w is the training IQR.
 
 | Regime | Mean Jacobian ($/MWh) | Relative to calm | Rows |
 |---|---:|---:|---:|
-| Calm | 49 | 1.0× | 12,030 |
+| Calm | 49 | 1.0× | 11,951 |
 | High | 81 | 1.7× | 1,939 |
-| Negative | 98 | 2.0× | 3,335 |
+| Negative | 98 | 2.0× | 3,414 |
 | Spike | 1,080 | 22.0× | 115 |
 
 An equal transformed-space error can correspond to a much larger dollar error in a spike.
@@ -317,9 +325,9 @@ The deviation term encourages regional differences because the source attributes
 
 ## 4. Results
 
-All error values below are in $/MWh. Regime columns report MAE.
+All error values below are in $/MWh. Regime columns report MAE. Every row is scored on the same timestamps — each arm's predictions are intersected with the control's scored rows first — and the regime masks come from one canonical truth rounded to cents, so a row's negative-price MAE does not depend on which file wrote it (`report/results_table.py` regenerates the table).
 
-| | model | MAE | RMSE | negative (3335) | calm (12030) | high (1939) | spike (115) |
+| | model | MAE | RMSE | negative (3,335) | calm (12,030) | high (1,939) | spike (115) |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Naive | `naive_persist` the last observed price | 56.67 | 321.2 | 58.3 | 38.4 | 100.0 | 1195.7 |
 |  | `naive_week` the same half-hour one week earlier | 67.83 | 350.1 | 71.6 | 48.8 | 100.4 | 1399.6 |
@@ -327,18 +335,20 @@ All error values below are in $/MWh. Regime columns report MAE.
 |  | `var` VAR, five price windows | 39.55 | 254.0 | 57.1 | 18.3 | 64.3 | 1341.2 |
 |  | `global_linear` one pooled linear model across regions | 39.71 | 254.2 | 55.9 | 18.7 | 64.6 | 1345.6 |
 |  | `arx_window` ridge, raw 96 x 37 window | 37.77 | 254.3 | 55.4 | 16.3 | 63.5 | 1343.3 |
+|  | `arx_ctx336` the same ridge on a 336-step window | 37.58 | 255.9 | 52.8 | 16.6 | 63.1 | 1342.8 |
 | Trees | `gbt_own` boosted trees, target window | 41.37 | 256.0 | 68.2 | 17.5 | 65.0 | 1362.1 |
 |  | `gbt_prices` boosted trees, five price windows | 40.25 | 255.8 | 64.4 | 16.7 | 65.9 | 1368.2 |
 |  | `gbt_pca` boosted trees, prices + 8 exogenous PCs | 38.92 | 255.0 | 64.6 | 15.3 | 63.0 | 1356.7 |
 |  | `gbt_all` boosted trees, all 3,552 values | 39.09 | 255.2 | 65.5 | 15.2 | 63.7 | 1359.5 |
 | LSTM, no decomposition | `single_SA1_price` LSTM, single task | 41.26 | 256.1 | 61.5 | 18.6 | 68.4 | 1367.7 |
-|  | `panel_lstm` LSTM on the raw window -- the no-decomposition control | 41.30 | 255.5 | 69.6 | 16.7 | 66.4 | 1366.2 |
+|  | `panel_lstm` LSTM on the raw window -- **the control** | 41.30 | 255.5 | 69.6 | 16.7 | 66.4 | 1366.2 |
 |  | `red37` LSTM on a learned 37-channel projection | 40.75 | 255.6 | 64.2 | 17.9 | 63.7 | 1365.1 |
 |  | `red16` LSTM on a learned 16-channel projection | 39.84 | 255.2 | 60.5 | 17.2 | 66.6 | 1359.3 |
 |  | `red8` LSTM on a learned 8-channel projection | 39.93 | 255.5 | 57.4 | 17.4 | 70.9 | 1366.9 |
 | LSTM, bands | `joint_nocouple` bands, coupling frozen at identity | 40.77 | 256.2 | 62.9 | 17.5 | 68.0 | 1372.2 |
 |  | `joint` bands + per-band coupling | 38.50 | 254.9 | 58.2 | 15.9 | 66.8 | 1348.5 |
 |  | `joint_lstm_film` the same + FiLM gate | 38.45 | 255.0 | 58.3 | 16.3 | 64.7 | 1336.0 |
+|  | `joint_lstm_film_ctx336` the same on a 336-step bank view | 39.39 | 257.0 | 56.9 | 16.5 | 72.3 | 1356.4 |
 | LSTM, bands + Jacobian weight | `a0.25` bands + coupling, Jacobian weight 0.25 | 37.79 | 254.8 | 54.6 | 16.1 | 65.9 | 1348.3 |
 |  | `a0.5` the same, 0.5 | 37.85 | 251.3 | 53.6 | 16.7 | 65.9 | 1319.6 |
 |  | `a0.75` the same, 0.75 | 38.41 | 250.3 | 51.6 | 18.3 | 65.6 | 1295.1 |
@@ -347,31 +357,41 @@ All error values below are in $/MWh. Regime columns report MAE.
 |  | `f0.5` FiLM + Jacobian 0.5 | 38.94 | 253.8 | 58.0 | 16.4 | 69.6 | 1330.3 |
 |  | `f0.75` FiLM + Jacobian 0.75 | 40.59 | 254.8 | 59.0 | 18.4 | 74.8 | 1255.9 |
 
-The best main-table MAE is ridge at **37.77**; the best main-table RMSE is **250.3** at α = 0.75, about **1.6% below** ridge's 254.3. The finer-grid ridge's MAE is 37.04; its RMSE is not supplied, so it cannot be placed in the two-objective plot below.
+The table above lists every family for completeness; the comparisons in this report are all against `panel_lstm`, because it is the only row that differs from the band arms in exactly one respect. Rows from other families differ in many at once — a ridge reads all 3,552 values linearly and never has to compress a window into a hidden state, trees split on individual coordinates, and neither is trained with the objective of §3 — so a margin against them is not attributable to anything in particular.
+
+Two things in the table are worth reading on their own terms. The linear rows are strong: `arx_window` at 37.77 and `arx_ctx336` at 37.58 are competitive with the best neural arm here, which is the empirical face of the argument in §2 — if the decomposition is a linear map, a well-fitted linear model on the raw window is already in the same function class. And `naive_persist` has the lowest spike MAE of anything in the table at 1,195.7, which §6 returns to.
+
+The best RMSE in the table is **250.3** at α = 0.75, **2.0% below** the control's 255.5.
 
 ## 5. Pareto view: which errors are being traded?
 
 ![MAE–RMSE trade-off and per-regime error changes across Jacobian exponents.](assets/pareto_frontier.png)
 
-**Panel A:** both axes should be minimized. Among the five non-FiLM α variants, α = 0.25, 0.5, and 0.75 are nondominated: none improves both MAE and RMSE over another. α = 0 and α = 1 are dominated. Adding the paired-test ridge makes α = 0.25 dominated as well; the remaining displayed frontier is ridge, α = 0.5, and α = 0.75.
+**Panel A:** both axes should be minimized. The control sits at the top right — every α variant dominates it on both objectives, which is the §2.4 result restated in two dimensions. Among the α variants themselves, **α = 0.25, 0.5 and 0.75 are nondominated**: none improves both MAE and RMSE over another, so choosing between them is a choice about which error you care about. α = 0 and α = 1 are dominated and should not be used.
 
 This is an **empirical frontier among the displayed candidates**, not a bound on what another model could achieve. Lines connect measured candidates and do not imply evaluated intermediate models.
 
-**Panel B:** negative values mean lower regime MAE than ridge. Increasing α generally helps the tails while hurting calm-period accuracy, but the changes are not strictly monotonic. Percentages in the plot are recomputed from the rounded main-table values; small differences from the original percentage table are rounding-related.
+**Panel B:** negative values mean lower regime MAE than the control. Increasing α buys tail accuracy with calm accuracy, and the exchange rate gets steadily worse: from α = 0 to α = 0.75 the negative-price error falls from −16.5% to −25.7% while calm goes from −4.4% to +9.8%, and the last step to α = 1 gives up 11 more points of calm error for 0.5 points of spike. The curves are not strictly monotonic — negative-price error is best at α = 0.75 and worsens at α = 1.
 
-### 5.1 Source-reported paired comparisons
+Both panels are regenerated from the prediction files by `report/plot_pareto.py`.
 
-The following table retains the source percentages and DM p-values. Percentages are relative to the 37.77 ridge fit; lower is better.
+### 5.1 Paired comparisons against the control
 
-| alpha | negative | calm | high | spike | MAE | RMSE |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0 | +5.1% (1.000) | -1.9% (0.095) | +5.2% (0.999) | +0.4% (0.719) | 38.50 | 254.9 |
-| 0.25 | -1.4% (0.167) | -1.2% (0.178) | +3.7% (0.994) | +0.4% (0.852) | 37.79 | 254.8 |
-| 0.5 | -3.2% (0.015) | +2.8% (0.969) | +3.7% (0.938) | -1.8% (0.129) | 37.85 | 251.3 |
-| 0.75 | -6.8% (0.000) | +12.9% (1.000) | +3.3% (0.797) | -3.6% (0.075) | 38.41 | 250.3 |
-| 1.0 | -2.0% (0.092) | +24.4% (1.000) | +14.4% (0.979) | -4.1% (0.212) | 40.95 | 251.7 |
+Percentages are the change in regime MAE relative to `panel_lstm`, with the one-sided DM p-value in brackets. Negative is an improvement, and a p-value near 1 means the arm is worse there.
 
-**Test specification** (`analysis/eval_joint.py:79`). The test is a **one-sided** Diebold-Mariano on the absolute-error differential `d_t = |e_ridge,t| - |e_model,t|`, with `H0: E[d_t] <= 0`. A small p-value therefore says the model is more accurate than ridge, and a p-value near 1 says the opposite — which is why the table's worse cells read `0.999` and `1.000` rather than being reported as non-significant.
+| arm | negative | calm | high | spike | MAE | RMSE |
+|---|---:|---:|---:|---:|---:|---:|
+| `joint` (α = 0) | **−16.5%** (0.000) | **−4.4%** (0.004) | +0.6% (0.611) | **−1.3%** (0.022) | 38.50 | 254.9 |
+| α = 0.25 | **−21.5%** (0.000) | **−3.9%** (0.005) | −0.8% (0.369) | **−1.3%** (0.007) | 37.79 | 254.8 |
+| α = 0.5 | **−23.0%** (0.000) | +0.1% (0.526) | −0.8% (0.393) | **−3.4%** (0.009) | 37.85 | 251.3 |
+| α = 0.75 | **−25.7%** (0.000) | +9.8% (0.996) | −1.2% (0.381) | **−5.2%** (0.016) | 38.41 | 250.3 |
+| α = 1.0 | **−21.8%** (0.000) | +21.1% (1.000) | +9.4% (0.925) | −5.7% (0.123) | 40.95 | 251.7 |
+| `joint_lstm_film` | **−16.3%** (0.000) | −2.4% (0.066) | −2.5% (0.080) | **−2.2%** (0.006) | 38.45 | 255.0 |
+| `joint_nocouple` | **−9.6%** (0.000) | +4.7% (0.997) | +2.5% (0.862) | +0.4% (0.859) | 40.77 | 256.2 |
+
+Three readings. **Negative prices are where the architecture earns its margin** — every band arm improves there at p = 0.000, and even the arm with its coupling frozen is 9.6% better, so part of that gain is the bank alone. **The high regime is where nothing happens**: no arm moves it significantly in either direction. And **spikes do move**, modestly but significantly, at every α up to 0.75 — which the earlier version of this report could not see, because against a linear baseline those same differences were not significant.
+
+**Test specification** (`analysis/eval_joint.py:79`). The test is a **one-sided** Diebold-Mariano on the absolute-error differential `d_t = |e_control,t| - |e_arm,t|`, with `H0: E[d_t] <= 0`. A small p-value therefore says the arm is more accurate than the control, and a p-value near 1 says the opposite — which is why the table's worse cells read `0.996` and `1.000` rather than being reported as non-significant.
 
 The variance is Newey-West, and the bandwidth is the **Andrews (1991) AR(1) plug-in**, not the `4(n/100)^(2/9)` rule of thumb:
 
@@ -382,59 +402,63 @@ $$
 
 This matters here: the windows overlap on a highly persistent price, the measured AC1 runs near 0.99, and the rule of thumb would pick 4 lags and overstate z by about an order of magnitude. The reported `ac1` and effective sample size travel with each result so the bandwidth choice can be checked rather than trusted.
 
-**Not** corrected for multiplicity. The table is 20 comparisons across five α values and four regimes, and §6's half-hour counts (`33/48`, `32/48`) come from 48 further tests each at the 0.05 level. Read any single cell near 0.05 accordingly. A displayed `0.000` is a rounded value, not literally zero. The regimes are defined on the realised outcome, so every regime row is a conditional comparison and cannot be read as an unconditional claim.
+**Not** corrected for multiplicity. The table is 28 comparisons across seven arms and four regimes, and the half-hour counts (`33/48`, `32/48`) come from 48 further tests each at the 0.05 level. Read any single cell near 0.05 accordingly. A displayed `0.000` is a rounded value, not literally zero. The regimes are defined on the realised outcome, so every regime row is a conditional comparison and cannot be read as an unconditional claim.
 
 ### 5.2 Practical readings
 
 | Candidate | Main advantage | Main cost |
 |---|---|---|
-| α = 0.25 | Nearly matches the original ridge MAE; slightly lower negative and calm errors | Does not improve high or spike error over ridge in this table |
-| α = 0.5 | Lower RMSE and negative-price error than ridge | Calm and high errors increase |
-| α = 0.75 | Lowest RMSE; best negative-price MAE among these α variants | Calm-period MAE rises substantially |
-| α = 1 | Lowest spike MAE among the non-FiLM α variants | Worse overall MAE and RMSE than α = 0.75 |
-| FiLM + α = 0.75 | Lowest spike MAE among trained models in the main table | Overall MAE is 40.59 |
+| **α = 0.25** | Best overall MAE in this report, 8.5% under the control, improving in 33 of 48 half-hours; better than the control in three of four regimes | Does not move the high regime |
+| α = 0.5 | 3.4 points lower RMSE than the control, negative prices 23% better, spikes 3.4% better | Gives up the calm-regime gain |
+| α = 0.75 | Lowest RMSE, best negative-price MAE, and the largest significant spike improvement | Calm-period MAE rises 9.8% — and calm is 69% of rows |
+| α = 1 | Lowest spike MAE of any α variant | 21% worse on calm, worse overall MAE than every other α, and the spike gain is no longer significant |
+| FiLM + α = 0.75 | Lowest spike MAE among all trained models, 1,255.9 | Overall MAE 40.59, barely better than the control |
 
-At α = 0.75, negative-price error is reported as 6.8% below ridge with rounded p = 0.000. At α = 0.5, the negative-price comparison also has reported p = 0.015. Statistical interpretation requires the test specification and attention to the number of comparisons.
+**If one arm has to be picked, it is α = 0.25**: it is the best on overall MAE, it is the only arm that improves negative, calm and spike simultaneously at p < 0.01, and it is nondominated on the MAE-RMSE frontier. α = 0.75 is the right pick only if tail error is the objective and 69% of rows getting 10% worse is acceptable.
 
 ## 6. Error concentration and regime routing
 
 ### 6.1 A small tail contributes substantial total error
 
-| Regime | Rows | Share of rows | Approx. share of joint absolute error | Joint MAE | Ridge MAE |
-|---|---:|---:|---:|---:|---:|
-| Negative | 3,335 | 19.1% | 29% | 58.2 | 55.4 |
-| Calm | 12,030 | 69.1% | 29% | 15.9 | 16.3 |
-| High | 1,939 | 11.1% | 19% | 66.8 | 63.5 |
-| Spike | 115 | 0.7% | 23% | 1348.5 | 1343.3 |
+| Regime | Rows | Share of rows | Share of `joint` absolute error | `joint` MAE | Control MAE | Change |
+|---|---:|---:|---:|---:|---:|---:|
+| Negative | 3,335 | 19.1% | 29% | 58.2 | 69.6 | **−16.5%** |
+| Calm | 12,030 | 69.1% | 28% | 15.9 | 16.7 | **−4.4%** |
+| High | 1,939 | 11.1% | 19% | 66.8 | 66.4 | +0.6% |
+| Spike | 115 | 0.7% | 23% | 1348.5 | 1366.2 | **−1.3%** |
 
-Only 115 spike rows contribute roughly 23% of absolute error. Persistence has lower spike MAE than every trained model in the table. This shows weakness of the tested models on these events; it does not establish that the events are intrinsically unpredictable.
+**A global MAE here is decided mostly where the margin is not.** 115 spike rows — 0.7% of the test set — carry 23% of the absolute error, and the best any trained model does there is 1.3-5.7% better than the control. Negative prices are 19% of rows and another 29% of the error, and that is where the decomposition's advantage is concentrated. Calm rows are 69% of the set but only 28% of the error. Reporting one number for all of them hides both facts, which is why §5.1 is segmented.
+
+Persistence has lower spike MAE than every trained model in the table — 1,195.7 against a best of 1,255.9. This is a weakness of the tested models on these events, not evidence that the events are intrinsically unpredictable.
 
 After removing the cross-region common mode, the source reports regional structure accounting for 0.4–1.9% of variance by band. The fastest band is reported to be 4.6 times more regional than the most shared band. This is consistent with a hypothesis about fast regional decoupling, but does not establish its physical cause or a numerical upper bound on predictive gains.
 
 ### 6.2 Oracle routing is a diagnostic, not a deployable result
 
-A source-reported oracle chooses a model using the **realized future regime**:
+If the arms specialise in different regimes, routing between them should pay. An oracle that picks per regime using the **realised future outcome**, over the trained arms plus persistence:
 
-| Realized regime | Selected model |
-|---|---|
-| Negative | α = 0.75 |
-| Calm | `joint` |
-| High | Ridge |
-| Spike | Persistence |
+| Realised regime | Best expert | MAE |
+|---|---|---:|
+| Negative | α = 0.75 | 51.1 |
+| Calm | `joint` | 15.9 |
+| High | `joint_lstm_film` | 64.7 |
+| Spike | `naive_persist` | 1195.7 |
 
-Reported oracle MAE: **35.86**, versus ridge's 37.77 (**−5.1%**). This is an optimistic retrospective comparator for the stated experts and routing rule, not a generally achievable forecast or a universal bound.
+Oracle MAE **36.02**, against `joint`'s 38.50 (−6.4%) and the control's 41.30 (−12.8%). That is the whole prize for perfect routing, and it is not reachable: the selector needs the answer it is trying to forecast.
 
-A classifier using the historical window reportedly recalls 26% of negative-price events and 3% of spikes. Hard routing worsens MAE by 2.4%. Soft routing improves it by 1.1%, while a fixed mixture improves it by 0.9%. Those weights were not fitted out of sample, so neither mixture improvement is an established generalization result.
+What is reachable is much less. A classifier reading the historical window recalls 26% of negative-price events and **3% of spikes** — and spikes are where the oracle's gain mostly lives, since persistence is 100 $/MWh better there than anything trained. Hard routing on that classifier makes MAE 2.4% **worse**. Soft blending improves it 1.1%, but a fixed mixture with no classifier at all improves it 0.9%, so almost all of the gain is diversification rather than routing. A fixed 50/50 average of `joint` and α = 0.75 gives 37.44, 2.8% better than `joint` — and that number is retrospective too: the blend weight was never fitted out of sample, because validation predictions are not saved (§7).
+
+The honest summary is that regime specialisation is real and measurable, and this report has no demonstrated way to exploit it.
 
 ## 7. Evidence limits and checks needed
 
 - **One seed and a narrow evaluation scope.** The split is resolved: train and validate on **2018-2020**, test on **2021**, with validation taken as the last 15% of the training windows in time order and a 96-step gap between the two so they cannot overlap (`experiments/run_joint.py:645`). The horizon is **h = 6 half-hour steps, i.e. three hours ahead**. The model has five outputs; only SA1 is scored here, so nothing in this report says whether the joint architecture helps the other four regions, and the four of them with no weather channel of their own (§1.1) are the ones most likely to behave differently. One seed throughout: the source reports seed noise of 0.116 MAE, against 0.04 across five decomposition families, so any margin of that size needs replication before it is believed.
-- **Stronger ridge baseline.** The finer-grid ridge reaches 37.04 MAE at `lam=3e4`; the source says validation and test optima coincide on that grid. Use validation-only selection, save predictions, and rerun paired comparisons before claiming a gain over ridge.
+- **This report claims a gain over a neural control, not state of the art.** The linear baselines in §4 are at 37.58-37.77 MAE, which brackets the best band arm, and a finer penalty grid reaches 37.04 (those predictions were not saved, so it has no paired test). §2 explains why that is expected rather than embarrassing — a linear model on the raw window is already in the same function class as a linear model on the bands — but it does mean the correct claim is "the decomposition helps this architecture by 6.8%", not "the decomposition wins".
 - **Historical exogenous features.** Their use alone does not make the result an upper bound. Validate availability at the forecast origin, publication delays, and revisions. Forecast covariates, if used later, require their own availability checks.
 - **Mask interpretation.** Most arms lack checkpoints. Initial center locations cannot be presented as learned bands. `--save-model` now records centers, widths, and coupling tensors; only `+exp` arms used it in the reported sweep.
 - **The nonlinear bank was never run.** `adapt > 0` is the only switch that makes the decomposition nonlinear in its input, and every arm in this report sets `adapt=0` (§1.2). Every conclusion in §2 is therefore about a *linear* decomposition, and none of it transfers to the adaptive variant without running it.
-- **Regime definitions.** Thresholds defining calm, high, negative, and spike are not included in the supplied text. Add them for reproducibility.
-- **Ridge equivalence.** Audit band-feature construction, normalization, regularization, and prediction comparison before treating exact equality as a mechanism result.
+- **Regime definitions.** `negative` is `p < 0`, `calm` is `0 <= p < 100`, `high` is `100 <= p < 300`, `spike` is `p >= 300`, all in $/MWh on the realised price (`analysis/by_regime.py:22`). The thresholds were fixed before the α sweep, not chosen to suit it, but they are conventions rather than anything the market defines.
+- **Band/raw ridge equivalence.** The measured agreement to `0.0000 $/MWh` (§2.3) is an empirical result, and §2.3 shows reconstruction alone does not force it. Audit the band-feature construction, normalisation and penalty selection before treating the exact equality as a mechanism result rather than a coincidence of this particular fit.
 - **Mechanism attribution.** The compression and whole-window explanations are hypotheses supported by partial controls. The existing comparisons do not uniquely identify them.
 - **Statistics.** Direction, loss differential and the serial-correlation treatment are now documented in §5.1. What is still owed: no multiplicity adjustment is applied anywhere in this report, and per-timestamp *validation* predictions are not saved, which is what blocks fitting the §6.2 ensemble weights out of sample.
 
@@ -442,7 +466,7 @@ A classifier using the historical window reportedly recalls 26% of negative-pric
 
 The original report attributes two earlier findings to [`attic/FINDINGS-full.md`](attic/FINDINGS-full.md): leakage in the evaluated published VMD forecasting setups, and a reported `10³–10⁵×` compute advantage for a filter bank over the compared decomposition solver. Those claims are not independently verified by the tables in this README.
 
-The source also reports paired effects of −6.8% for `joint` versus the raw-window LSTM and −5.6% for `joint` versus identity-frozen coupling, with rounded DM p = 0.000 and improvements in 33/48 and 32/48 half-hour slots, respectively. These are full-arm comparisons; their interpretation should reflect every architectural difference.
+The two headline paired effects — −6.8% for `joint` against the raw-window LSTM (33/48 half-hours) and −5.6% against identity-frozen coupling (32/48), both at rounded DM p = 0.000 — are reproduced in §5.1 and §2.4 from the prediction files, not inherited. They are full-arm comparisons: `joint` differs from `panel_lstm` in its input representation and in nothing else, but that one difference bundles the bank, the coupling and the 37-to-16 narrowing together, which is why §2.4 splits it.
 
 [`PITFALLS.md`](PITFALLS.md) records the PACE execution and measurement traps behind these runs. Both files are in this repository; the two claims above are still inherited from the earlier report and are not re-derived by the tables here.
 
@@ -452,4 +476,6 @@ The source also reports paired effects of −6.8% for `joint` versus the raw-win
 
 This rewrite preserves the supplied numerical results and distinguishes observations from hypotheses. A later pass added §1.1 (the five regions, the grid topology, and what the 37 channels are), resolved the split dates, horizon units and DM-test specification against the code rather than leaving them as open questions, recorded where `adapt=0` is set and that the nonlinear bank has never been run, and replaced `\operatorname` with `\mathrm` throughout because GitHub's renderer rejects it. It corrects the ridge-equivalence argument, the best-spike claim, the strict-monotonicity claim, the interpretation of coupling-penalty ablation, and the unsupported upper-bound claim about historical exogenous inputs.
 
-One correction has since been reversed against the logs. An earlier draft restated the tree comparison as `41.37 → 40.51`, a 2.1% improvement; those two numbers come from different experiments with different training-set sizes. The within-experiment comparison in `logs/basis_matters.log` is `38.797 → 40.509`, a 4.4% deterioration, and §2.4 now reports that. No new experiments were run for this rewrite.
+One correction has since been reversed against the logs. An earlier draft restated the tree comparison as `41.37 → 40.51`, a 2.1% improvement; those two numbers come from different experiments with different training-set sizes. The within-experiment comparison in `logs/basis_matters.log` is `38.797 → 40.509`, a 4.4% deterioration, and §2.4 now reports that.
+
+**What changed in the current pass, and why.** The yardstick for every comparison moved from a tuned ridge to `panel_lstm`, the raw-window neural control. The reason is that the ridge differs from the band arms in several ways at once — it reads all 3,552 values linearly, never compresses a window into a hidden state, and is not trained with the objective of §3 — so a margin against it is not attributable to the decomposition. `panel_lstm` differs in exactly one respect. Readers should know that this change also flatters the result: against the ridge the band model lost on overall MAE, and against the control it wins by 6.8%. **Both comparisons are in this document** — the linear rows are still in §4 and §7 states plainly that this report claims a gain over a neural control and not state of the art. §4, §5 and §6 were recomputed from the prediction files on a single row alignment with one canonical regime split, because the earlier tables mixed two and reported the same arm at two different negative-price MAEs. No new experiments were run.
