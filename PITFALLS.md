@@ -86,12 +86,40 @@ Things that did *not* help:
   `drain`. Free *cards* on `mix` nodes are what backfill fills; count them from
   each node's `AllocTRES`, not from partition state.
 
-### Do not include gpu-v100
+### `--partition` does not bind. `--constraint` does.
 
 A V100 is compute capability 7.0 and `torch 2.14.1+cu130` ships kernels for
-CC >= 7.5 only. A job scheduled there dies in five seconds with "does not
-include kernels for this GPU". Three arms were lost that way. A100 / L40S /
-H100 / RTX6000 are fine.
+CC >= 7.5 only. A job scheduled there dies in seconds, either with "does not
+include kernels for this GPU" or, once an LSTM calls `flatten_parameters()`,
+with `RuntimeError: cuDNN version 92400 is not compatible with devices with
+SM < 7.5`. Three arms were lost that way on 2026-10-09.
+
+**The lesson recorded that day was the wrong one.** It read "do not include
+gpu-v100", and on 2026-10-15 a sweep that did not include it lost six of seven
+arms to it anyway:
+
+```
+--partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000   --gres=gpu:1
+  -> 6 jobs ran in gpu-v100, 1 in gpu-rtx6000
+```
+
+The partition list is a hint on this cluster, not a restriction, and an untyped
+`--gres=gpu:1` lets the scheduler put the job anywhere. A **node feature** is a
+hard constraint and cannot be routed around:
+
+```
+--constraint="A100|H100|H200|L40S|RTX6000"
+```
+
+V100 nodes carry the feature `V100` and nothing else in that list, so they
+become unschedulable rather than merely undesired. A probe carrying this
+constraint landed on an H200 in under four minutes. Features come from
+`sinfo -h -o "%P|%G|%f"`; the GPU partitions as of 2026-10-15 are `gpu-a100`,
+`gpu-h100`, `gpu-h200`, `gpu-l40s`, `gpu-rtx6000`, `gpu-rtxpro-blackwell` and
+`gpu-v100`. The first six are all CC >= 7.5.
+
+Also set `--cpus-per-task=1`. `--ntasks-per-node=1` alone does not bound the
+cores, and the epilog of these jobs reported `cpu=12, mem=384G`.
 
 ### Environment
 
@@ -123,6 +151,22 @@ login access to the cluster, which is a trade to make deliberately.
 
 `rsync host:'~/path/*'` does not expand `~` remotely. Use a path relative to the
 remote home, or scp.
+
+**The login node is load balanced.** `login-phoenix.pace.gatech.edu` resolves to
+one of several hosts and consecutive connections land on different ones, so a
+file written to `/tmp` by one command is gone for the next. Anything that has to
+survive between commands goes in `~/scratch`.
+
+**Killing a remote command can wedge the ControlMaster.** After one `pkill` of a
+hung remote python, every subsequent ssh -- including a bare `cat` -- hung on
+the shared mux socket. `ssh -O exit <host>` and deleting the `ControlPath`
+socket fixes it; `-o ControlMaster=no -o ControlPath=none` avoids the shared
+socket entirely and is the safer default for scripted one-shots.
+
+**Remote stdout is block-buffered.** `ssh host 'python - <<EOF ... EOF'` returns
+nothing at all until the process exits, which is indistinguishable from a hang.
+Use `python -u`, and prefer `ssh -n` so the remote command cannot sit waiting on
+a forwarded stdin.
 
 ### Job hygiene
 
