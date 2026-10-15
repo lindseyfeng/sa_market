@@ -265,3 +265,15 @@ clean setup.
   decomposition -- the no-decomposition *same-head* control is.
 - One seed cannot resolve a 1% margin here. Seed noise is 0.116 MAE where five
   decomposition families span 0.04.
+- **Re-running the same arm on different hardware moves it more than the seed
+  does.** `joint` at h=6 seed 1 scored SA1 38.50 on 2026-10-09 and the same
+  config, same seed, scored **38.78** on 2026-10-15 on an A100 -- 0.28 MAE, more
+  than twice the measured seed noise. The runner sets
+  `torch.backends.cudnn.benchmark = True`, which picks algorithms by timing, so
+  the summation order and therefore the trajectory depend on the card. Nothing
+  is wrong with either number; they are not comparable.
+
+  **So put the control in the same batch as the arms, every time.** Reading a
+  new arm's 37.52 against a control measured on different hardware six days
+  earlier turns a 3.2% effect into a 2.5% one, and the direction of that error
+  is not knowable in advance.
