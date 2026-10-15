@@ -399,6 +399,11 @@ def run_arm(arm, seed, data, args, device):
     QGRID = {3: (0.1, 0.5, 0.9), 5: (0.05, 0.25, 0.5, 0.75, 0.95),
              7: (0.02, 0.1, 0.25, 0.5, 0.75, 0.9, 0.98)}
     quantiles = QGRID.get(n_q, ()) if n_q > 1 else ()
+    # +attn / +cat change how 96 steps become one vector. The ridge never
+    # summarises the window at all and beat the LSTM arm by 1.3%; the last
+    # hidden state is the one structural disadvantage this model has and did
+    # not have to have.
+    pool = "attn" if "attn" in bits else ("cat" if "cat" in bits else "last")
     gate_additive = "agate" in bits
     gate = gate or gate_additive
     xenv = "xenv" in bits
@@ -436,6 +441,7 @@ def run_arm(arm, seed, data, args, device):
         gate=gate, envelope=envelope, bandgate=bandgate,
         gate_additive=gate_additive, xenv=xenv, tconv=tconv,
         horizons=len(data["horizons"]) if n_mh else 1, quantiles=quantiles,
+        pool=pool,
     ).to(device)
     # Which column of the shared multi-horizon target block is the scored one.
     hi = data["hi"]

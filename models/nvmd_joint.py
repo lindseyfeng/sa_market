@@ -327,7 +327,8 @@ class JointForecaster(nn.Module):
                  reduce_to: int = 0, gate: bool = False,
                  envelope: bool = False, bandgate: bool = False,
                  gate_additive: bool = False, xenv: bool = False,
-                 tconv: bool = False, horizons: int = 1, quantiles=()):
+                 tconv: bool = False, horizons: int = 1, quantiles=(),
+                 pool: str = "last"):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -385,15 +386,32 @@ class JointForecaster(nn.Module):
         self.O = self.H * len(self.Q)
         self.q_median = min(range(len(self.Q)),
                             key=lambda i: abs(self.Q[i] - 0.5))
+        # How the 96 steps are turned into one vector. This is the one place
+        # the ridge has a structural advantage and the model does not: it
+        # reads all 96 x C values linearly and never has to summarise them,
+        # and it beat the LSTM arm by 1.3% at h=6.
+        #
+        #   last   the original -- the final hidden state, everything else
+        #          thrown away. A bidirectional LSTM's last step is not even a
+        #          summary of the whole window in both directions
+        #   attn   a learned weight per timestep, so the readout can keep what
+        #          it needs from anywhere in the window and still be nonlinear
+        #   cat    last + mean + max, three cheap views instead of one
+        self.pool = pool
         if head == "lstm":
             self.lstm = nn.LSTM(n_in, lstm_hidden, lstm_layers, batch_first=True,
                                 bidirectional=True,
                                 dropout=0.1 if lstm_layers > 1 else 0.0)
+            if pool == "attn":
+                self.att = nn.Linear(lstm_hidden * 2, 1)
+                nn.init.zeros_(self.att.weight)
+                nn.init.zeros_(self.att.bias)      # uniform weights at init
+            wide = {"last": 1, "attn": 1, "cat": 3}[pool]
             # A per-region embedding on the trunk output, so one shared trunk can
             # be read differently per region without a trunk each.
-            self.region = nn.Parameter(torch.zeros(self.T, lstm_hidden * 2))
+            self.region = nn.Parameter(torch.zeros(self.T, lstm_hidden * 2 * wide))
             self.head = nn.Sequential(
-                nn.Linear(lstm_hidden * 2, lstm_hidden), nn.ReLU(),
+                nn.Linear(lstm_hidden * 2 * wide, lstm_hidden), nn.ReLU(),
                 nn.Linear(lstm_hidden, self.O),
             )
         elif head == "linear":
@@ -437,7 +455,17 @@ class JointForecaster(nn.Module):
             o = o + self.region.view(1, T, 1)
         else:
             h, _ = self.lstm(feat.reshape(B * T, C2, L).permute(0, 2, 1))
-            z = h[:, -1].reshape(B, T, -1) + self.region
+            if self.pool == "attn":
+                # Zero-initialised logits make this a plain mean at step 0,
+                # not the last step, so `attn` is not a no-op against `last` --
+                # the comparison is between two readouts, both trained.
+                w = torch.softmax(self.att(h), dim=1)       # (B*T, L, 1)
+                g = (h * w).sum(1)
+            elif self.pool == "cat":
+                g = torch.cat([h[:, -1], h.mean(1), h.max(1).values], dim=-1)
+            else:
+                g = h[:, -1]
+            z = g.reshape(B, T, -1) + self.region
             o = self.head(z)                               # (B, T, O)
         if self.O == 1:
             return o.squeeze(-1)                           # the original shape
