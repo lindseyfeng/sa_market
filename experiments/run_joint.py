@@ -403,6 +403,12 @@ def run_arm(arm, seed, data, args, device):
     # summarises the window at all and beat the LSTM arm by 1.3%; the last
     # hidden state is the one structural disadvantage this model has and did
     # not have to have.
+    # +exo<M> gives the exogenous pathway M components per band instead of 1.
+    # A rank-1 projection of 85 non-target channels onto one scalar is why
+    # this architecture gets worse as the panel grows while a ridge on the
+    # same channels gets better.
+    exo_rank = next((int(b[3:]) for b in bits if b.startswith("exo")
+                     and b[3:].isdigit()), 1)
     pool = "attn" if "attn" in bits else ("cat" if "cat" in bits else "last")
     gate_additive = "agate" in bits
     gate = gate or gate_additive
@@ -441,7 +447,7 @@ def run_arm(arm, seed, data, args, device):
         gate=gate, envelope=envelope, bandgate=bandgate,
         gate_additive=gate_additive, xenv=xenv, tconv=tconv,
         horizons=len(data["horizons"]) if n_mh else 1, quantiles=quantiles,
-        pool=pool,
+        pool=pool, exo_rank=exo_rank,
     ).to(device)
     # Which column of the shared multi-horizon target block is the scored one.
     hi = data["hi"]

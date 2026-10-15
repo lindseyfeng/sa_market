@@ -147,7 +147,7 @@ class JointSpatioTemporalNVMD(nn.Module):
                  context: int = None, expand=(), gate: bool = False,
                  envelope: bool = False, bandgate: bool = False,
                  gate_additive: bool = False, xenv: bool = False,
-                 tconv: bool = False):
+                 tconv: bool = False, exo_rank: int = 1):
         """`xfilter` is the only part of this model a linear reader cannot copy.
 
         A partition-of-unity band decomposition is an invertible linear map, and
@@ -194,6 +194,24 @@ class JointSpatioTemporalNVMD(nn.Module):
             self.tconv = TemporalBandConv(K, c0[0].tolist(), signal_len)
         self.coupling = PerBandSpatialCoupling(C, K, enabled=coupling,
                                                init=coupling_init)
+        # The exogenous pathway is a rank-1 projection: A_k[r, :] turns every
+        # non-target channel into ONE scalar per band. At 37 channels that is
+        # 36 -> 1; at 86 it is 85 -> 1, strictly more lossy, and it is why
+        # feeding this architecture more channels makes it worse while the same
+        # channels make a ridge better -- measured, +env goes 36.30 -> 37.01
+        # from 37 to 86 channels while arx_window goes 36.37 -> 36.13.
+        #
+        # exo_rank > 1 adds M-1 further components per band, so the exogenous
+        # capacity scales with the panel instead of staying at one. The
+        # original component is untouched and the extras are seeded small
+        # rather than at zero: zero-initialised extras would receive identical
+        # gradients forever and never separate from each other.
+        self.exo_rank = int(exo_rank)
+        self.exo_extra = None
+        if self.exo_rank > 1 and coupling:
+            e = torch.empty(K, len(self.targets), self.exo_rank - 1, C)
+            nn.init.normal_(e, 0.0, 0.01)
+            self.exo_extra = nn.Parameter(e)
         self.xfilter = CrossFilter(K) if xfilter else None
         if bandgate and not envelope:
             raise ValueError("+bgate needs +env: the gate reads band envelopes")
@@ -232,7 +250,14 @@ class JointSpatioTemporalNVMD(nn.Module):
         # Zero each target's own column so the mix carries only what the
         # target's own modes do not already hold; `own` is concatenated untouched.
         w[:, torch.arange(len(self.targets)), self.targets] = 0.0
-        return torch.einsum("bckl,ktc->btkl", modes, w)
+        out = torch.einsum("bckl,ktc->btkl", modes, w)
+        if self.exo_extra is None:
+            return out
+        e = self.exo_extra.clone()                         # (K, T, M-1, C)
+        e[:, torch.arange(len(self.targets)), :, self.targets] = 0.0
+        ex = torch.einsum("bckl,ktmc->btmkl", modes, e)
+        B_, T_, M_, K_, L_ = ex.shape
+        return torch.cat([out, ex.reshape(B_, T_, M_ * K_, L_)], dim=2)
 
     def forward(self, x):
         B, C, L = x.shape
@@ -328,7 +353,7 @@ class JointForecaster(nn.Module):
                  envelope: bool = False, bandgate: bool = False,
                  gate_additive: bool = False, xenv: bool = False,
                  tconv: bool = False, horizons: int = 1, quantiles=(),
-                 pool: str = "last"):
+                 pool: str = "last", exo_rank: int = 1):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -356,7 +381,7 @@ class JointForecaster(nn.Module):
                 coupling_init=coupling_init, xfilter=xfilter, context=context,
                 expand=expand, gate=gate, envelope=envelope,
                 bandgate=bandgate, gate_additive=gate_additive, xenv=xenv,
-                tconv=tconv,
+                tconv=tconv, exo_rank=exo_rank,
             )
         self.reduce = None
         if reduce_to:
@@ -365,7 +390,8 @@ class JointForecaster(nn.Module):
         n_in = reduce_to if reduce_to else (
             (((3 if xfilter else 2) + len(expand) + (2 if envelope else 0)
               + (1 if bandgate else 0) + (1 if gate_additive else 0)
-              + (2 if xenv else 0) + (1 if tconv else 0)) * K)
+              + (2 if xenv else 0) + (1 if tconv else 0)
+              + (exo_rank - 1 if coupling else 0)) * K)
             if decompose else (n_chan or C))
         # Multi-horizon and quantile output. The window list, the scored rows
         # and every regularisation term are unchanged: the trunk is the same
