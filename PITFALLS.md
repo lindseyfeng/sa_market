@@ -233,6 +233,14 @@ clean setup.
 
 ### Comparisons that looked like findings
 
+- **Score every output the model has.** This model predicts five regions and
+  every number in this project was reported on SA1 alone. On the five-region
+  mean the headline effect of `+env` is **-1.82%** against the no-decomposition
+  control, not the -3.2% SA1 shows -- roughly half the apparent gain was one
+  region. It is not noise either: the improvement tracks whether a region has a
+  weather channel of its own (SA1 -3.2% and VIC1 -2.9% have Adelaide, the two
+  SA wind zones and Melbourne; NSW1 -0.6%, QLD1 -1.3%, TAS1 -0.9% have none),
+  so reporting SA1 was reporting the best case and calling it the result.
 - **A global mean can be settled where nothing has skill.** 115 spike rows are
   0.7% of the test set and **23%** of the total absolute error, and every model
   including the ridge sits near 1,300 $/MWh on them. Negative prices are another

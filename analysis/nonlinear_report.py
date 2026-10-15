@@ -35,11 +35,24 @@ SEGS = [("negative", lambda y: y < 0), ("calm", lambda y: (y >= 0) & (y < 100)),
         ("high", lambda y: (y >= 100) & (y < 300)), ("spike", lambda y: y >= 300)]
 
 
-def ld(f):
+REGIONS = ["SA1_price", "NSW1_price", "VIC1_price", "QLD1_price", "TAS1_price"]
+
+
+def ld(f, region=None):
+    """All five regions by default, not SA1.
+
+    The model has five outputs and the headline number has to be the mean over
+    all of them. Scoring SA1 alone nearly doubled the apparent effect of +env:
+    -3.2% against the control on SA1, -1.82% over the five regions. The reason
+    is not noise -- the gain tracks whether a region has a weather channel of
+    its own. SA1 -3.2% and VIC1 -2.9% have Adelaide, the two SA wind zones and
+    Melbourne; NSW1 -0.6%, QLD1 -1.3% and TAS1 -0.9% have none.
+    """
     z = np.load(f, allow_pickle=True)
     nm = [str(v) for v in z["names"]]
-    i = nm.index("SA1_price") if "SA1_price" in nm else 0
-    return z["pred"][:, i], z["truth"][:, i], z["start"]
+    want = [region] if region else REGIONS
+    idx = [nm.index(r) for r in want if r in nm] or [0]
+    return z["pred"][:, idx], z["truth"][:, idx], z["start"]
 
 
 def paired(f, ref):
@@ -110,35 +123,47 @@ def main():
         r = {"arm": tag}
         for rname, ref in refs.items():
             p, y, pr, yr, ym = paired(f, ref)
+            k = min(p.shape[1], pr.shape[1])
+            p, y, pr, yr = p[:, :k], y[:, :k], pr[:, :k], yr[:, :k]
             e, ec = np.abs(p - y), np.abs(pr - yr)
-            _, pv, _ = dm(ec, e)
-            r[f"mae"] = float(e.mean())
-            r[f"rmse"] = float(np.sqrt(((p - y) ** 2).mean()))
+            _, pv, _ = dm(ec.reshape(-1), e.reshape(-1))
+            r["mae"] = float(e.mean())
+            r["rmse"] = float(np.sqrt(((p - y) ** 2).mean()))
             r[f"d_{rname}"] = 100 * (e.mean() - ec.mean()) / ec.mean()
             r[f"p_{rname}"] = pv
             if rname == "joint":
+                # Regimes are cut on the first region's price, which is the
+                # one the regime analysis was built on; the MAE averaged is
+                # still over every region.
                 for n, m in SEGS:
-                    r[n] = float(e[m(ym)].mean())
+                    r[n] = float(e[m(ym[:, 0])].mean())
+                for j, nmr in enumerate(REGIONS[:k]):
+                    r["R_" + nmr.replace("_price", "")] = float(e[:, j].mean())
         sub = tag.split("  [")[1][:-1] if "  [" in tag else None
         r.update(gate_stats(a.models, tag.split("  [")[0], sub))
         rows.append(r)
     rows.sort(key=lambda r: r["mae"])
 
     w = max(len(r["arm"]) for r in rows) + 2
-    print(f"{'arm':<{w}}{'MAE':>8}{'RMSE':>8}"
+    regs = [k[2:] for k in rows[0] if k.startswith("R_")]
+    print(f"{'arm':<{w}}{'OVERALL':>9}{'RMSE':>8}"
           f"{'vs panel':>10}{'p':>7}{'vs joint':>10}{'p':>7}"
           + "".join(f"{n:>10}" for n, _ in SEGS)
+          + "".join(f"{g:>8}" for g in regs)
           + f"{'gate_c':>9}{'bgate':>8}{'bandmix':>8}")
     print("-" * (w + 8 * 2 + 10 * 2 + 7 * 2 + 10 * len(SEGS) + 25))
     for r in rows:
-        print(f"{r['arm']:<{w}}{r['mae']:8.2f}{r['rmse']:8.1f}"
+        print(f"{r['arm']:<{w}}{r['mae']:9.2f}{r['rmse']:8.1f}"
               f"{r['d_panel_lstm']:+10.1f}{r['p_panel_lstm']:7.3f}"
               f"{r['d_joint']:+10.1f}{r['p_joint']:7.3f}"
               + "".join(f"{r[n]:10.1f}" for n, _ in SEGS)
+              + "".join(f"{r.get('R_' + g, float('nan')):8.2f}" for g in regs)
               + f"{r.get('gate_c', float('nan')):9.4f}"
               + f"{r.get('bgate', float('nan')):8.4f}"
               + f"{r.get('band_mix', float('nan')):8.4f}")
-    print("\nvs panel = the whole band architecture; vs joint = the nonlinearity "
+    print("\nOVERALL is the mean over all five regions, which is what the model "
+          "predicts.\nScoring SA1 alone reports roughly twice the effect.\n")
+    print("vs panel = the whole band architecture; vs joint = the nonlinearity "
           "alone.\ngate_c ~ 0 means the bank trained back to linear and its MAE "
           "is not evidence\nof anything nonlinear. One-sided DM, Andrews AR(1) "
           "bandwidth, no multiplicity\nadjustment. One seed: seed noise here is "
