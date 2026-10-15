@@ -27,6 +27,8 @@ Interpretability is then a property you can read off the model: every mode has
 an explicit centre frequency and bandwidth, directly comparable to VMD's omega.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -79,11 +81,31 @@ class StructuredSpectralNVMD(nn.Module):
     """
 
     def __init__(self, K: int = 8, signal_len: int = 96, d_model: int = 128,
-                 adapt: float = 0.5, bw_init: float = 0.6, ratio: float = 1.8):
+                 adapt: float = 0.5, bw_init: float = 0.6, ratio: float = 1.8,
+                 gate: bool = False, envelope: bool = False):
         super().__init__()
         self.K = K
         self.L = signal_len
         self.F = signal_len // 2 + 1
+        self.gate, self.envelope = gate, envelope
+        if gate:
+            # Magnitude-dependent spectral gain. The masks are a partition of
+            # unity, so sum_k x_k == x exactly and the bank hands the head a
+            # re-slicing of something it already had -- which is why ridge on
+            # bands equals ridge on the raw window to 0.0000 $/MWh. This breaks
+            # that on purpose: the gain on a coefficient depends on how large
+            # that coefficient is relative to its own band's energy, so a quiet
+            # fast band is suppressed and a loud one passes. That is a learned
+            # Wiener gain, it is not in the span of any linear map on x, and no
+            # tree can form it either (it needs |rFFT| of the whole window).
+            #
+            # g = 1 + c * tanh(a * log(|W| / rms_k) + b), with c = 0 at init, so
+            # step 0 is an exact no-op and the gate departs from the identity
+            # only if the objective pays for it -- the same discipline as the
+            # coupling and the FiLM gate.
+            self.g_a = nn.Parameter(torch.ones(K))
+            self.g_b = nn.Parameter(torch.zeros(K))
+            self.g_c = nn.Parameter(torch.zeros(K))
 
         self.encoder = SignalEncoder(d_model)
         self.gap_head = nn.Sequential(
@@ -145,12 +167,79 @@ class StructuredSpectralNVMD(nn.Module):
         g = torch.exp(-0.5 * ((f - centres.unsqueeze(-1)) / bw.unsqueeze(-1)) ** 2)
         return g / g.sum(dim=1, keepdim=True).clamp(min=1e-8)      # (B, K, F)
 
-    def forward(self, x: torch.Tensor):
-        """x: (B, 1, L) -> imfs (B, K, L) with sum(imfs) == x, masks (B, K, F)."""
+    # Every magnitude below is sqrt(re^2 + im^2 + EPS) rather than .abs(), and
+    # every rms adds EPS before the sqrt rather than clamping after it. Both
+    # matter: a mask that has underflowed leaves |W| at exactly 0 (944 of
+    # 8 x 49 coefficients on a random batch, measured), where d|W|/dW is 0/0,
+    # and clamping the *output* of a sqrt does nothing for its backward pass.
+    EPS = 1e-12
+
+    def gain(self, W: torch.Tensor) -> torch.Tensor:
+        """Per-coefficient gain in [1-|c|, 1+|c|]. W: (B, K, F) -> (B, K, F)."""
+        mag = torch.sqrt(W.real ** 2 + W.imag ** 2 + self.EPS)
+        rms = mag.pow(2).mean(-1, keepdim=True).add(self.EPS).sqrt()
+        r = torch.log(mag / rms + 1e-6)
+        a, b, c = (t.view(1, -1, 1) for t in (self.g_a, self.g_b, self.g_c))
+        return 1.0 + c * torch.tanh(a * r + b)
+
+    @staticmethod
+    def analytic(W: torch.Tensor, L: int) -> torch.Tensor:
+        """One-sided band coefficients -> the band's analytic signal (B, K, L).
+
+        Zero the negative frequencies and double the strictly-positive ones, so
+        `real(z) == irfft(W)` exactly while `|z|` is the band's envelope and
+        `angle(z)` its instantaneous phase. Costs one ifft and gives the two
+        features a narrowband signal actually has -- neither of which is in the
+        span of a linear map, and neither of which an LSTM can read off a mode
+        without integrating the whole window itself.
+        """
+        B, K, Fb = W.shape
+        Z = W.new_zeros(B, K, L)
+        Z[..., :Fb] = W
+        hi = Fb - 1 if L % 2 == 0 else Fb        # exclude DC and, if present, Nyquist
+        Z[..., 1:hi] = Z[..., 1:hi] * 2
+        return torch.fft.ifft(Z, n=L, dim=-1)
+
+    def decompose_rich(self, x: torch.Tensor):
+        """x: (B, 1, L) -> imfs (B, K, L), masks (B, K, F), extra or None.
+
+        `extra` is (B, 2K, L): per band, log1p of the analytic envelope and the
+        instantaneous frequency in cycles/step. Instantaneous frequency is the
+        phase of z(t+1) * conj(z(t)), which needs no unwrapping and is bounded
+        in [-0.5, 0.5] by construction.
+        """
         L = x.shape[-1]
         m = self.masks(x)
         Xf = torch.fft.rfft(x.squeeze(1), n=L, dim=-1)              # (B, F)
-        imfs = torch.fft.irfft(Xf.unsqueeze(1) * m, n=L, dim=-1)    # (B, K, L)
+        W = Xf.unsqueeze(1) * m                                     # (B, K, F)
+        if self.gate:
+            W = W * self.gain(W)
+        if not self.envelope:
+            return torch.fft.irfft(W, n=L, dim=-1), m, None
+        z = self.analytic(W, L)                                     # (B, K, L)
+        env = torch.sqrt(z.real ** 2 + z.imag ** 2 + self.EPS)      # (B, K, L)
+        d = z[..., 1:] * z[..., :-1].conj()
+        # atan2's gradient is 1/(x^2 + y^2). |d| gets down to 1e-5 on real
+        # windows, which is a gradient of 1e10 straight into the bank and the
+        # reason the first version of this trained to NaN in one epoch. Project
+        # d onto the unit circle first: the feature is unchanged, and atan2 now
+        # differentiates at radius 1.
+        # The offset on the real part is not cosmetic. Several panel channels
+        # are constant inside a 96-step window (the calendar ones), so every
+        # band above DC is *exactly* zero for them and atan2(0, 0) has a 0/0
+        # gradient -- which is what still trained to NaN after the radius fix.
+        # Offsetting first sends a dead band to atan2(0, 1) = 0, the right
+        # "no phase information" value, with a finite derivative.
+        dr, di = d.real + 1e-8, d.imag
+        den = torch.sqrt(dr ** 2 + di ** 2 + self.EPS)
+        inst = torch.atan2(di / den, dr / den) / (2.0 * math.pi)
+        inst = torch.cat([inst[..., :1], inst], dim=-1)             # (B, K, L)
+        extra = torch.cat([torch.log1p(env), inst], dim=1)          # (B, 2K, L)
+        return z.real, m, extra
+
+    def forward(self, x: torch.Tensor):
+        """x: (B, 1, L) -> imfs (B, K, L) with sum(imfs) == x, masks (B, K, F)."""
+        imfs, m, _ = self.decompose_rich(x)
         return imfs, m
 
     # ------------------------------------------------------------------

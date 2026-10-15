@@ -304,6 +304,25 @@ def run_arm(arm, seed, data, args, device):
     # than the prices, because after the common mode is removed the other
     # regional prices carry 0.4-1.9% of the variance at any scale.
     expand = tuple(data["expand_idx"]) if "exp" in bits else ()
+    # The three switches that make the decomposition nonlinear in its input.
+    # Everything else in the band pathway is a matrix multiply, which is why
+    # ridge on bands equals ridge on the raw window to 0.0000 $/MWh.
+    #   +gate    magnitude-dependent spectral gain, breaks the partition of
+    #            unity so sum_k x_k no longer reconstructs x
+    #   +env     hand the head each band's analytic envelope and instantaneous
+    #            frequency as well as the band itself
+    #   +ad<x>   input-dependent band edges (adapt=x/100); the module default
+    #            is 0.5 and the runner has always pinned it to 0
+    # All three are exact no-ops at initialisation except +env, which widens
+    # the head's input, so an arm can only depart from the linear bank if the
+    # objective pays for it.
+    gate = "gate" in bits
+    envelope = "env" in bits
+    #   +bgate   aggregate the bands: a 3-tap conv along the band axis plus a
+    #            FiLM gate driven by the band envelopes (needs +env)
+    bandgate = "bgate" in bits
+    adapt = next((int(b[2:]) / 100.0 for b in bits if b.startswith("ad")
+                  and b[2:].isdigit()), 0.0)
     # "red16" keeps the width the band pathway produces and drops the band
     # structure, which is the only way to tell capacity from coordinates.
     reduce_to = next((int(b[3:]) for b in bits if b.startswith("red")), 0)
@@ -328,44 +347,12 @@ def run_arm(arm, seed, data, args, device):
         reg = None
     model = JointForecaster(
         C=data["n_feat"], targets=targets, K=args.K, signal_len=args.seq_len,
-        lstm_hidden=args.hidden, adapt=0.0, coupling=(base == "joint"),
+        lstm_hidden=args.hidden, adapt=adapt, coupling=(base == "joint"),
         coupling_init=(c_init if base == "joint" else 0.0), head=head,
         decompose=decompose, n_chan=data["n_feat"],
         xfilter=xfilter, context=ctx, expand=expand, reduce_to=reduce_to,
+        gate=gate, envelope=envelope, bandgate=bandgate,
     ).to(device)
-    # "joint@0.01" is the joint arm with its off-diagonal coupling seeded at
-    # N(0, 0.01). Carrying it in the arm name rather than a global flag lets both
-    # initialisations share one dataset build, one window list and one resume
-    # file, so the only thing that differs between them is the seeding.
-    # Arm names carry their own configuration so one invocation, one dataset
-    # build and one resume file cover the whole comparison:
-    #   joint              lstm head, zero-init coupling
-    #   joint/linear       linear head over the whole band stack
-    #   joint/linear@0.01  the same with the coupling seeded
-    spec = arm.split("@", 1)
-    c_init = float(spec[1]) if len(spec) > 1 else args.coupling_init
-    parts = spec[0].split("/", 1)
-    tag = parts[1] if len(parts) > 1 else args.head
-    bits = tag.split("+")
-    head = bits[0] or args.head
-    xfilter = "film" in bits
-    ctx = next((int(b[3:]) for b in bits if b.startswith("ctx")), args.context)
-    # "+exp" gives the physical drivers their own band channels instead of
-    # folding them into the single per-band exogenous scalar. Which channels
-    # those are is --expand; the default is demand and wind, the causes rather
-    # than the prices, because after the common mode is removed the other
-    # regional prices carry 0.4-1.9% of the variance at any scale.
-    expand = tuple(data["expand_idx"]) if "exp" in bits else ()
-    # "red16" keeps the width the band pathway produces and drops the band
-    # structure, which is the only way to tell capacity from coordinates.
-    reduce_to = next((int(b[3:]) for b in bits if b.startswith("red")), 0)
-    base = parts[0]
-    # "panel" is the no-decomposition control: the same head reading the raw
-    # window. It is the only arm that isolates the decomposition, because a band
-    # decomposition is an invertible linear map -- ridge on bands and ridge on
-    # the raw window give identical predictions to 0.0000 $/MWh, measured -- so
-    # nothing linear can tell them apart and `arx_window` is not this control.
-    decompose = base != "panel"
     if arm.startswith("single"):
         scaler = data["scaler_one"][reg]
         dl = {k: DataLoader(data["one"][reg][k], batch_size=args.batch,
@@ -484,7 +471,44 @@ def run_arm(arm, seed, data, args, device):
     out["reduce_to"] = reduce_to
     if base == "joint" and decompose and not reduce_to:
         out["coupling"] = coupling_report(model, data, names, targets)
+    if (gate or bandgate) and decompose and not reduce_to:
+        out["nonlinearity"] = nonlinearity_report(model)
+        print("  nonlinearity: " + "  ".join(
+            f"{k}={v:.4f}" for k, v in out["nonlinearity"].items()))
     return out
+
+
+def nonlinearity_report(model):
+    """Did the nonlinear parts move off the identity at all?
+
+    Every switch added here is an exact no-op at initialisation, which is the
+    right discipline and also the right way to end up reporting a result that
+    came entirely from the linear path. The FiLM gate in `CrossFilter` is the
+    cautionary case: zero-initialised, and `joint_lstm_film` scored 38.45
+    against `joint`'s 38.50, a difference small enough to be consistent with
+    the gate never having opened.
+
+    So these numbers come first when reading any gated arm. `gate_c` is the
+    amplitude of the spectral gain -- at 0 the bank is still exactly the linear
+    partition-of-unity bank no matter what the MAE says. `bgate_gamma` and
+    `bgate_beta` are the FiLM weights on the band aggregator, and `band_mix`
+    is the distance of the cross-band tap from the identity [0, 1, 0].
+    """
+    dec = model.decomposer
+    rep = {}
+    bank = dec.decomposer
+    if getattr(bank, "gate", False):
+        rep["gate_c"] = float(bank.g_c.abs().mean())
+        rep["gate_c_max"] = float(bank.g_c.abs().max())
+    agg = getattr(dec, "aggregator", None)
+    if agg is not None:
+        w = agg.film[-1].weight
+        rep["bgate_gamma"] = float(w[:bank.K].abs().mean())
+        rep["bgate_beta"] = float(w[bank.K:].abs().mean())
+        ident = torch.zeros_like(agg.mix.weight)
+        ident[0, 0, 1] = 1.0
+        rep["band_mix"] = float((agg.mix.weight - ident).abs().sum())
+    return rep
 
 
 def coupling_report(model, data, names, targets):

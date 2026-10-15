@@ -38,13 +38,74 @@ from models.nvmd_v3 import StructuredSpectralNVMD
 from models.nvmd_st import PerBandSpatialCoupling, CrossFilter
 
 
+
+class BandAggregator(nn.Module):
+    """Local feature extraction across bands, and a nonlinear way to pool them.
+
+    Concatenating K band signals and handing them to an LSTM is the weakest
+    possible aggregation: the head gets K channels with no indication that they
+    are ordered, that adjacent ones overlap, or that their amplitudes mean
+    something jointly. Two local operators fix that, on the two axes the band
+    stack actually has, and neither needs a graph.
+
+    **Frequency axis.** Bands are ordered and their masks overlap, so band k-1,
+    k, k+1 are literal neighbours in frequency and a harmonic sits about one
+    band away. A 3-tap convolution *along k* is the natural local operator
+    there. It is initialised to [0, 1, 0], the identity.
+
+    **Amplitude axis.** `gamma, beta = f(envelopes)` then `x_k -> x_k (1+gamma_k)
+    + beta_k`. This says how much band k matters right now depends on where the
+    energy sits across all bands right now -- a statement that cannot be written
+    down without a decomposition, and a product, so no linear reader and no tree
+    on raw time steps can copy it. The last layer is zero-initialised.
+
+    Both are exact no-ops at step 0, and the untouched `own` stack is carried
+    alongside the aggregated one, so this can only add.
+
+    Not done here, and the next two things to try:
+      * a depthwise temporal conv whose dilation is set per band to that band's
+        own period, so band k looks exactly as far back as its oscillation runs
+        instead of sharing one kernel width with the trend;
+      * over regions, a 3-tap conv along the grid order QLD1-NSW1-VIC1-SA1 with
+        TAS1 beside VIC1. The NEM is a path, so a graph convolution on it *is*
+        an ordinary 1-D convolution -- there is no GNN to build. That would be a
+        restriction of the current full C x C coupling, not an addition, and the
+        case for restricting is that 1,440 live coupling entries are chasing a
+        regional signal worth 0.4-1.9% of the variance once the common mode is
+        removed.
+    """
+
+    def __init__(self, K: int, hidden: int = 16):
+        super().__init__()
+        self.K = K
+        self.mix = nn.Conv1d(1, 1, 3, padding=1)            # along the band axis
+        with torch.no_grad():
+            self.mix.weight.zero_()
+            self.mix.weight[0, 0, 1] = 1.0                  # identity tap
+            self.mix.bias.zero_()
+        self.film = nn.Sequential(
+            nn.Conv1d(K, hidden, 1), nn.GELU(), nn.Conv1d(hidden, 2 * K, 1),
+        )
+        nn.init.zeros_(self.film[-1].weight)
+        nn.init.zeros_(self.film[-1].bias)
+
+    def forward(self, own: torch.Tensor, env: torch.Tensor) -> torch.Tensor:
+        """own, env: (B, K, L) -> aggregated (B, K, L)."""
+        B, K, L = own.shape
+        y = own.permute(0, 2, 1).reshape(B * L, 1, K)       # bands as the length axis
+        y = self.mix(y).reshape(B, L, K).permute(0, 2, 1)   # (B, K, L)
+        gamma, beta = self.film(env).chunk(2, dim=1)
+        return y * (1.0 + gamma) + beta
+
+
 class JointSpatioTemporalNVMD(nn.Module):
     """x: (B, C, L) -> (B, T, 2K, L), one own+exogenous stack per target."""
 
     def __init__(self, C: int, targets, K: int = 8, signal_len: int = 96,
                  d_model: int = 128, adapt: float = 0.0, coupling: bool = True,
                  coupling_init: float = 0.0, xfilter: bool = False,
-                 context: int = None, expand=()):
+                 context: int = None, expand=(), gate: bool = False,
+                 envelope: bool = False, bandgate: bool = False):
         """`xfilter` is the only part of this model a linear reader cannot copy.
 
         A partition-of-unity band decomposition is an invertible linear map, and
@@ -76,12 +137,17 @@ class JointSpatioTemporalNVMD(nn.Module):
         self.register_buffer("expand",
                              torch.as_tensor(list(expand), dtype=torch.long))
         self.register_buffer("targets", torch.as_tensor(list(targets), dtype=torch.long))
+        self.envelope = envelope
         self.decomposer = StructuredSpectralNVMD(
             K=K, signal_len=self.ctx, d_model=d_model, adapt=adapt,
+            gate=gate, envelope=envelope,
         )
         self.coupling = PerBandSpatialCoupling(C, K, enabled=coupling,
                                                init=coupling_init)
         self.xfilter = CrossFilter(K) if xfilter else None
+        if bandgate and not envelope:
+            raise ValueError("+bgate needs +env: the gate reads band envelopes")
+        self.aggregator = BandAggregator(K) if bandgate else None
 
     def expanded(self, modes):
         """Channels handed to the head as their own full band set.
@@ -120,12 +186,20 @@ class JointSpatioTemporalNVMD(nn.Module):
 
     def forward(self, x):
         B, C, L = x.shape
-        modes, masks = self.decomposer(x.reshape(B * C, 1, L))
+        modes, masks, extra = self.decomposer.decompose_rich(x.reshape(B * C, 1, L))
         modes = modes.reshape(B, C, self.K, L)
         own = modes[:, self.targets]                       # (B, T, K, L) lossless
         exo = self.exogenous(modes)                        # (B, T, K, L)
+        # Envelope and instantaneous frequency of the target's own bands. Kept
+        # out of `own` so the lossless stack still reaches the head untouched
+        # and the FiLM path below still sees exactly K channels.
+        rich = None
+        if extra is not None:
+            rich = extra.reshape(B, C, 2 * self.K, L)[:, self.targets]
         if self.out_len < L:                               # long bank view, short head view
             own, exo = own[..., -self.out_len:], exo[..., -self.out_len:]
+            if rich is not None:
+                rich = rich[..., -self.out_len:]
         ex = self.expanded(modes)
         if ex is not None:
             if self.out_len < L:
@@ -134,8 +208,17 @@ class JointSpatioTemporalNVMD(nn.Module):
             # not something the target index should change.
             ex = ex.unsqueeze(1).expand(-1, own.shape[1], -1, -1, -1)
             ex = ex.reshape(B, own.shape[1], -1, own.shape[-1])
+        agg = None
+        if self.aggregator is not None:
+            B_, T_, _, L_ = own.shape
+            env = rich[:, :, :self.K]                      # (B, T, K, L)
+            agg = self.aggregator(own.reshape(B_ * T_, self.K, L_),
+                                  env.reshape(B_ * T_, self.K, L_))
+            agg = agg.reshape(B_, T_, self.K, L_)
         if self.xfilter is None:
-            parts = [own, exo] + ([ex] if ex is not None else [])
+            parts = ([own, exo] + ([ex] if ex is not None else [])
+                     + ([rich] if rich is not None else [])
+                     + ([agg] if agg is not None else []))
             return torch.cat(parts, dim=2), masks          # (B, T, (2+X)K, L)
         # `own` is carried through untouched as well as gated, so the lossless
         # encoding survives the gate exactly as it survives plain concat.
@@ -146,6 +229,10 @@ class JointSpatioTemporalNVMD(nn.Module):
         out = torch.cat([o, e_x, fused], dim=1).reshape(B, T, 3 * self.K, Lo)
         if ex is not None:
             out = torch.cat([out, ex], dim=2)
+        if rich is not None:
+            out = torch.cat([out, rich], dim=2)
+        if agg is not None:
+            out = torch.cat([out, agg], dim=2)
         return out, masks                                  # (B, T, (3+X)K, L)
 
 
@@ -164,7 +251,8 @@ class JointForecaster(nn.Module):
                  coupling_init: float = 0.0, head: str = "lstm",
                  decompose: bool = True, n_chan: int = None,
                  xfilter: bool = False, context: int = None, expand=(),
-                 reduce_to: int = 0):
+                 reduce_to: int = 0, gate: bool = False,
+                 envelope: bool = False, bandgate: bool = False):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -189,15 +277,17 @@ class JointForecaster(nn.Module):
                 C=C, targets=targets, K=K, signal_len=signal_len,
                 d_model=d_model, adapt=adapt, coupling=coupling,
                 coupling_init=coupling_init, xfilter=xfilter, context=context,
-                expand=expand,
+                expand=expand, gate=gate, envelope=envelope,
+                bandgate=bandgate,
             )
         self.reduce = None
         if reduce_to:
             self.reduce = nn.Conv1d(n_chan or C, reduce_to, 1)
             self.decompose = False
         n_in = reduce_to if reduce_to else (
-            (((3 if xfilter else 2) + len(expand)) * K) if decompose
-            else (n_chan or C))
+            (((3 if xfilter else 2) + len(expand) + (2 if envelope else 0)
+              + (1 if bandgate else 0)) * K)
+            if decompose else (n_chan or C))
         if head == "lstm":
             self.lstm = nn.LSTM(n_in, lstm_hidden, lstm_layers, batch_first=True,
                                 bidirectional=True,
