@@ -83,7 +83,8 @@ class StructuredSpectralNVMD(nn.Module):
     def __init__(self, K: int = 8, signal_len: int = 96, d_model: int = 128,
                  adapt: float = 0.5, bw_init: float = 0.6, ratio: float = 1.8,
                  gate: bool = False, envelope: bool = False,
-                 gate_additive: bool = False, mca: int = 0):
+                 gate_additive: bool = False, mca: int = 0,
+                 phase: bool = False, vmd_iters: int = 0):
         super().__init__()
         self.K = K
         self.L = signal_len
@@ -123,6 +124,45 @@ class StructuredSpectralNVMD(nn.Module):
         # nonlinear and time-localised, i.e. exactly what the bank cannot do.
         # Thresholds scale with the residual's own RMS in the window, so the
         # split adapts per window rather than being a fixed level.
+        # The masks are real and non-negative, so every atom this bank can
+        # produce is time-symmetric -- measured at 1e-8, float precision. A
+        # price spike is not symmetric: it rises in minutes and decays over
+        # hours. A symmetric basis cannot represent an asymmetric transient no
+        # matter how the bands are placed, and no downstream module can repair
+        # that, which is the first thing about the decomposition's SHAPE that
+        # has been wrong rather than merely limited.
+        #
+        # A learned quadratic phase response per band, M_k(f) -> M_k(f) e^{i
+        # phi_k(f)}, makes the atoms asymmetric. It is applied in place, unlike
+        # the magnitude gate, and that is the point: a phase rotation is an
+        # allpass, exactly invertible and energy-preserving per band, so no
+        # information is destroyed. The gate changed |W| and was lossy, and it
+        # lost. theta = 0 is the identity.
+        self.phase = phase
+        if phase:
+            self.theta = nn.Parameter(torch.zeros(K))
+        # VMD's adaptivity, without VMD's leakage.
+        #
+        # What separates VMD from a filter bank is not that its modes are
+        # narrowband -- ours are too -- but that its centre frequencies are
+        # SOLVED FOR on each signal, by the energy-weighted spectral centroid
+        #
+        #     omega_k <- int w |u_k(w)|^2 dw / int |u_k(w)|^2 dw
+        #
+        # iterated to a fixed point. Our centres are learned parameters,
+        # identical for every window, which is why the bank is a constant
+        # linear map. `adapt` was meant to fix that but perturbs the gap logits
+        # through an MLP -- a second black box, not VMD's rule -- and is worth
+        # 0.6% (p=0.088).
+        #
+        # The reason this project exists is that published VMD forecasting
+        # setups decompose the WHOLE series, future included, and leak. Running
+        # VMD's own update inside the input window -- which ends at the
+        # forecast origin -- keeps the adaptivity and cannot leak. The centroid
+        # is parameter-free, differentiable and nonlinear in |X|^2, so this is
+        # also the first thing here that makes the decomposition genuinely
+        # nonlinear in its input rather than nonlinear in its weights.
+        self.vmd_iters = int(vmd_iters)
         self.mca = int(mca)
         if self.mca:
             self.tau_p = nn.Parameter(torch.tensor(1.5))
@@ -199,12 +239,35 @@ class StructuredSpectralNVMD(nn.Module):
         bw = (self.bw_min + F.softplus(self.log_bw)).unsqueeze(0)  # (1, K)
         return centres, bw.expand_as(centres)
 
-    def masks(self, x: torch.Tensor = None):
-        """Gaussian band filters normalised to a partition of unity."""
-        centres, bw = self.bands(x)                                # (B, K)
+    def _masks_from(self, centres, bw):
         f = self.freqs.view(1, 1, -1)                              # (1, 1, F)
         g = torch.exp(-0.5 * ((f - centres.unsqueeze(-1)) / bw.unsqueeze(-1)) ** 2)
         return g / g.sum(dim=1, keepdim=True).clamp(min=1e-8)      # (B, K, F)
+
+    def vmd_centres(self, Xf, centres, bw):
+        """VMD's centre-frequency update, run inside the window only.
+
+        Xf: (B, F) complex spectrum of this window. Each iteration rebuilds the
+        masks at the current centres, forms the mode spectra and moves every
+        centre to its own energy-weighted centroid. Centres are clamped into
+        [0, Nyquist] and re-sorted, because the centroid step has no ordering
+        constraint of its own and VMD relies on its initialisation to keep the
+        modes separated.
+        """
+        f = self.freqs.view(1, 1, -1)
+        p = Xf.abs().pow(2).unsqueeze(1)                           # (B, 1, F)
+        for _ in range(self.vmd_iters):
+            m = self._masks_from(centres, bw)                      # (B, K, F)
+            e = (m ** 2) * p                                       # |u_k(w)|^2
+            centres = ((f * e).sum(-1) / e.sum(-1).clamp(min=1e-12))
+            centres = centres.clamp(0.0, float(self.freqs[-1]))
+            centres, _ = torch.sort(centres, dim=-1)
+        return centres
+
+    def masks(self, x: torch.Tensor = None):
+        """Gaussian band filters normalised to a partition of unity."""
+        centres, bw = self.bands(x)                                # (B, K)
+        return self._masks_from(centres, bw)
 
     # Every magnitude below is sqrt(re^2 + im^2 + EPS) rather than .abs(), and
     # every rms adds EPS before the sqrt rather than clamping after it. Both
@@ -300,10 +363,19 @@ class StructuredSpectralNVMD(nn.Module):
                                additive and the lossless modes are kept
         """
         L = x.shape[-1]
-        m = self.masks(x)
         Xf = torch.fft.rfft(x.squeeze(1), n=L, dim=-1)              # (B, F)
+        centres, bw = self.bands(x)
+        if self.vmd_iters:
+            centres = self.vmd_centres(Xf, centres.expand(Xf.shape[0], -1),
+                                       bw.expand(Xf.shape[0], -1))
+            bw = bw.expand_as(centres)
+        m = self._masks_from(centres, bw)                           # (B, K, F)
         W = Xf.unsqueeze(1) * m                                     # (B, K, F)
         aux = {}
+        if self.phase:
+            f = (self.freqs / self.freqs[-1].clamp(min=1e-8)).view(1, 1, -1)
+            ph = math.pi * self.theta.view(1, -1, 1) * f ** 2
+            W = W * torch.polar(torch.ones_like(ph), ph)
         if self.gate:
             Wg = W * self.gain(W)
             if self.gate_additive:

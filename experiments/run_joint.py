@@ -413,6 +413,22 @@ def run_arm(arm, seed, data, args, device):
     # oversupply discount. Both are sparse and time-localised, which a Gaussian
     # band bank cannot represent -- it is localised in frequency and maximally
     # delocalised in time, so it smears a spike across every band.
+    # +vmd<n>  n iterations of VMD's own centre-frequency update, run inside
+    #          the input window. VMD's adaptivity without VMD's leakage: the
+    #          published setups this project was started to check decompose
+    #          the whole series, future included. The centroid is
+    #          parameter-free and nonlinear in |X|^2, and the partition of
+    #          unity is renormalised afterwards, so the decomposition becomes
+    #          input-dependent without becoming lossy -- unlike the magnitude
+    #          gate, which was nonlinear and lossy and lost.
+    # +phase   a learned quadratic phase per band. The masks are real and
+    #          non-negative, so every atom the bank can build is time-symmetric
+    #          to 1e-8, measured; a price spike rises in minutes and decays
+    #          over hours. A phase rotation is an allpass, so this changes the
+    #          shape of the waves without destroying anything.
+    vmd_iters = next((int(b[3:]) for b in bits if b.startswith("vmd")
+                      and b[3:].isdigit()), 0)
+    phase = "phase" in bits
     mca = next((int(b[3:]) for b in bits if b.startswith("mca")
                 and b[3:].isdigit()), 0)
     exo_rank = next((int(b[3:]) for b in bits if b.startswith("exo")
@@ -455,7 +471,8 @@ def run_arm(arm, seed, data, args, device):
         gate=gate, envelope=envelope, bandgate=bandgate,
         gate_additive=gate_additive, xenv=xenv, tconv=tconv,
         horizons=len(data["horizons"]) if n_mh else 1, quantiles=quantiles,
-        pool=pool, exo_rank=exo_rank, mca=mca,
+        pool=pool, exo_rank=exo_rank, mca=mca, phase=phase,
+        vmd_iters=vmd_iters,
     ).to(device)
     # Which column of the shared multi-horizon target block is the scored one.
     hi = data["hi"]
