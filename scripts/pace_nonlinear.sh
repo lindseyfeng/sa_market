@@ -33,7 +33,21 @@ mkdir -p logs results preds
 
 ACCT="${ACCT:-gts-sd111}"
 H="${HORIZON:-6}"
+# --partition is NOT honoured on this cluster. Measured 2026-10-15: seven jobs
+# submitted with --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000 and an
+# untyped --gres=gpu:1; six of them ran in gpu-v100, which was not in the list,
+# and died in seconds on
+#
+#   RuntimeError: cuDNN version 92400 is not compatible with devices with
+#   SM < 7.5
+#
+# because a V100 is compute capability 7.0 and this torch ships kernels for
+# CC >= 7.5 only. A node feature is a hard constraint and cannot be routed
+# around: V100 nodes carry the feature `V100`, so requiring any of the others
+# makes them unschedulable. The probe that carried this constraint landed on an
+# H200. Keep --partition as a hint; --constraint is what actually binds.
 EPOCHS="${EPOCHS:-30}"
+FEATURES="${FEATURES:-A100|H100|H200|L40S|RTX6000}"
 PY="\$HOME/scratch/.conda/envs/samkt/bin/python"
 
 # "arm" or "arm@@alpha" for --w-jacobian.
@@ -57,9 +71,11 @@ for spec in $SPECS; do
   tag=$(printf '%s' "$spec" | tr '/:+@.' '_____')
   sbatch --account="$ACCT" --qos=inferno \
     --job-name="nl${H}_${tag}" \
-    --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000 \
-    --nodes=1 --ntasks-per-node=1 --gres=gpu:1 --mem-per-cpu=32G \
-    --time="${WALL:-00:25:00}" \
+    --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-h200,gpu-rtx6000 \
+    --constraint="$FEATURES" \
+    --nodes=1 --ntasks-per-node=1 --cpus-per-task=1 --gres=gpu:1 \
+    --mem-per-cpu=32G \
+    --time="${WALL:-00:30:00}" \
     --output="logs/nl${H}_${tag}_%j.out" \
     --wrap "cd \$SLURM_SUBMIT_DIR && \
       nvidia-smi --query-gpu=name --format=csv,noheader && \
