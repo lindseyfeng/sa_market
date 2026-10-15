@@ -233,6 +233,16 @@ clean setup.
 
 ### Comparisons that looked like findings
 
+- **A control that shares the mechanism under test is not a control.** Thirty
+  five jobs were submitted with `joint/lstm` as the control while diagnosing
+  whether a rank-1 exogenous projection was the reason more channels made the
+  model worse -- and `joint/lstm` has that projection. The cross-panel numbers
+  survived, because each arm was compared against itself across panels, but the
+  attribution did not: nothing in the sweep could say whether the degradation
+  was the band pathway or the LSTM, which was the only question being asked.
+  `panel/lstm` reads the raw window with no bands and no coupling and should
+  have been in every batch. Before submitting, ask whether the control shares
+  the structure being tested.
 - **Score every output the model has.** This model predicts five regions and
   every number in this project was reported on SA1 alone. On the five-region
   mean the headline effect of `+env` is **-1.82%** against the no-decomposition
