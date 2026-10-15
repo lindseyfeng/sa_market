@@ -327,7 +327,7 @@ class JointForecaster(nn.Module):
                  reduce_to: int = 0, gate: bool = False,
                  envelope: bool = False, bandgate: bool = False,
                  gate_additive: bool = False, xenv: bool = False,
-                 tconv: bool = False):
+                 tconv: bool = False, horizons: int = 1, quantiles=()):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -346,6 +346,7 @@ class JointForecaster(nn.Module):
         """
         super().__init__()
         self.T, self.K, self.L, self.kind = len(targets), K, signal_len, head
+        self.h_index = 0          # set by the runner when horizons > 1
         self.decompose = decompose
         if decompose:
             self.decomposer = JointSpatioTemporalNVMD(
@@ -365,6 +366,25 @@ class JointForecaster(nn.Module):
               + (1 if bandgate else 0) + (1 if gate_additive else 0)
               + (2 if xenv else 0) + (1 if tconv else 0)) * K)
             if decompose else (n_chan or C))
+        # Multi-horizon and quantile output. The window list, the scored rows
+        # and every regularisation term are unchanged: the trunk is the same
+        # and only the final linear widens from 1 to H*Q, so with H=1 and no
+        # quantiles the parameter tensors and the forward pass are identical
+        # to before.
+        #
+        # Why widen at all. Each of the 44,535 training windows currently
+        # produces five numbers, and the other eleven horizons it could be
+        # supervised on are thrown away. Asking for the whole trajectory is
+        # twelve times the supervision at no extra data cost, and it forces the
+        # representation to carry dynamics rather than one lag. Quantiles are
+        # the second half: MAE is minimised by the conditional median, and a
+        # spike hour's conditional is not unimodal, so a point head is being
+        # asked to summarise a mixture with one number.
+        self.Q = tuple(quantiles) if quantiles else (0.5,)
+        self.H = int(horizons)
+        self.O = self.H * len(self.Q)
+        self.q_median = min(range(len(self.Q)),
+                            key=lambda i: abs(self.Q[i] - 0.5))
         if head == "lstm":
             self.lstm = nn.LSTM(n_in, lstm_hidden, lstm_layers, batch_first=True,
                                 bidirectional=True,
@@ -374,13 +394,13 @@ class JointForecaster(nn.Module):
             self.region = nn.Parameter(torch.zeros(self.T, lstm_hidden * 2))
             self.head = nn.Sequential(
                 nn.Linear(lstm_hidden * 2, lstm_hidden), nn.ReLU(),
-                nn.Linear(lstm_hidden, 1),
+                nn.Linear(lstm_hidden, self.O),
             )
         elif head == "linear":
             # One weight per (feature, timestep), shared across regions, plus a
             # per-region bias. Shared so a win cannot come from five separate
             # models, which is the same reason the LSTM trunk is shared.
-            self.proj = nn.Linear(n_in * signal_len, 1)
+            self.proj = nn.Linear(n_in * signal_len, self.O)
             nn.init.zeros_(self.proj.bias)
             self.region = nn.Parameter(torch.zeros(self.T))
         else:
@@ -410,12 +430,22 @@ class JointForecaster(nn.Module):
         return feat, masks, None, self._read(feat)
 
     def _read(self, feat):
+        """(B, T, C2, L) -> (B, T) when O == 1, else (B, T, H, |Q|)."""
         B, T, C2, L = feat.shape
         if self.kind == "linear":
-            return self.proj(feat.reshape(B * T, C2 * L)).reshape(B, T) + self.region
-        h, _ = self.lstm(feat.reshape(B * T, C2, L).permute(0, 2, 1))
-        z = h[:, -1].reshape(B, T, -1) + self.region
-        return self.head(z).squeeze(-1)
+            o = self.proj(feat.reshape(B * T, C2 * L)).reshape(B, T, self.O)
+            o = o + self.region.view(1, T, 1)
+        else:
+            h, _ = self.lstm(feat.reshape(B * T, C2, L).permute(0, 2, 1))
+            z = h[:, -1].reshape(B, T, -1) + self.region
+            o = self.head(z)                               # (B, T, O)
+        if self.O == 1:
+            return o.squeeze(-1)                           # the original shape
+        return o.view(B, T, self.H, len(self.Q))
+
+    def point(self, o):
+        """The scored prediction: target horizon, median quantile."""
+        return o if o.dim() == 2 else o[:, :, self.h_index, self.q_median]
 
 
 if __name__ == "__main__":

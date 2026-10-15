@@ -57,11 +57,19 @@ class JointDataset(Dataset):
     scored on exactly the same rows and a paired test between them is valid.
     """
 
-    def __init__(self, feat, target, starts, L, h, ctx=None):
+    def __init__(self, feat, target, starts, L, h, ctx=None, horizons=None):
         self.x = torch.from_numpy(feat.astype(np.float32))
         self.y = torch.from_numpy(target.astype(np.float32))      # (rows, T)
         self.starts, self.L, self.h = starts, L, h
         self.ctx = ctx or L
+        # Multi-horizon supervision without changing which rows are scored.
+        # `starts` is untouched, so a long-horizon arm and a single-horizon arm
+        # see exactly the same windows; horizons that run off the end of the
+        # series come back as NaN and the loss masks them. Dropping those rows
+        # instead would silently shorten the test set and break every paired
+        # test against an existing arm.
+        self.horizons = list(horizons) if horizons else [h]
+        self.hi = self.horizons.index(h) if h in self.horizons else 0
 
     def __len__(self):
         return len(self.starts)
@@ -70,7 +78,16 @@ class JointDataset(Dataset):
         s = self.starts[i]
         a = s + self.L - self.ctx
         assert a >= 0, "window start is negative; raise --skip-head"
-        return self.x[a:s + self.L].T, self.y[s + self.L + self.h - 1]
+        x = self.x[a:s + self.L].T
+        if len(self.horizons) == 1:
+            return x, self.y[s + self.L + self.h - 1]
+        n, T = self.y.shape
+        out = self.y.new_full((T, len(self.horizons)), float("nan"))
+        for j, hh in enumerate(self.horizons):
+            k = s + self.L + hh - 1
+            if 0 <= k < n:
+                out[:, j] = self.y[k]
+        return x, out
 
 
 class TargetScaler:
@@ -210,7 +227,29 @@ def _weights(y, args, scaler, n_price):
         return j.pow(args.w_jacobian)
 
 
-def joint_loss(p, y, args, model, arm, dev_sd, n_price, scaler=None):
+def horizon_loss(o, y, qs, wt=None):
+    """Pinball loss over every horizon and quantile that is actually available.
+
+    o: (B, T, H, Q) predictions. y: (B, T, H) targets, NaN where the horizon
+    runs past the end of the series. wt: (B, T, H) or None.
+
+    The quantile at 0.5 reduces to L1, so a single-quantile multi-horizon arm
+    is the same objective as the current one applied to more targets -- which
+    is what makes the two comparable.
+    """
+    m = ~torch.isnan(y)
+    yy = torch.nan_to_num(y, nan=0.0).unsqueeze(-1)            # (B,T,H,1)
+    q = torch.as_tensor(qs, dtype=o.dtype, device=o.device).view(1, 1, 1, -1)
+    d = yy - o
+    pin = torch.maximum(q * d, (q - 1.0) * d)                  # (B,T,H,Q)
+    mm = m.unsqueeze(-1).to(o.dtype)
+    if wt is not None:
+        mm = mm * wt.unsqueeze(-1)
+    return (pin * mm).sum() / mm.sum().clamp(min=1.0)
+
+
+def joint_loss(p, y, args, model, arm, dev_sd, n_price, scaler=None,
+               o=None, y_full=None):
     """The primary term, plus every regulariser this problem actually argues for.
 
     Each term is reported as well as summed, because a term whose magnitude is
@@ -219,7 +258,16 @@ def joint_loss(p, y, args, model, arm, dev_sd, n_price, scaler=None):
     el = _elem(args)
     pp, yp = p[:, :n_price], y[:, :n_price]
     wt = _weights(y, args, scaler, n_price)
-    if wt is None:
+    if o is not None:
+        # Multi-horizon / quantile arm. The price term is scored over every
+        # horizon and quantile; every other term below stays on the scored
+        # horizon's median, so the regularisers mean exactly what they did.
+        parts = {"price": horizon_loss(o[:, :n_price], y_full[:, :n_price],
+                                       model.Q,
+                                       None if wt is None
+                                       else wt.unsqueeze(-1).expand_as(
+                                           y_full[:, :n_price]))}
+    elif wt is None:
         parts = {"price": el(pp, yp)}
     else:
         # Weighted mean of the pointwise loss, so --loss still selects its shape.
@@ -249,7 +297,8 @@ def joint_loss(p, y, args, model, arm, dev_sd, n_price, scaler=None):
     return sum(parts.values()), parts
 
 
-def evaluate(model, loader, device, scaler, names, n_price=None, cut=None):
+def evaluate(model, loader, device, scaler, names, n_price=None, cut=None,
+             hi=0):
     """Metrics in $/MWh, over the price targets only."""
     n_price = len(names) if n_price is None else n_price
     model.eval()
@@ -259,7 +308,9 @@ def evaluate(model, loader, device, scaler, names, n_price=None, cut=None):
         for x, y in loader:
             x = (cut(x) if cut else x).to(device)
             y = y.to(device)
-            p = model(x)[3]
+            p = model.point(model(x)[3])
+            if y.dim() > 2:            # multi-horizon targets: score one
+                y = y[..., hi]
             pr, yr = scaler.inverse(p)[:, :n_price], scaler.inverse(y)[:, :n_price]
             a = (pr - yr).abs().sum(0)
             s = ((pr - yr) ** 2).sum(0)
@@ -334,6 +385,20 @@ def run_arm(arm, seed, data, args, device):
     #   +xenv    envelope and instantaneous frequency of the *exogenous* mix.
     #            Coupling is linear, so the magnitude has to be taken after it
     #   +tconv   one depthwise conv per band, dilated to that band's own period
+    # +mh<N>  supervise horizons 1..N instead of only the scored one. 44,535
+    #         windows currently yield five numbers each and throw the other
+    #         eleven horizons away; this is 12x the supervision for free.
+    # +q<N>   predict N quantiles instead of a point. MAE is the 0.5 quantile,
+    #         so q=1 is the same objective; the reason to widen is that a
+    #         spike hour's conditional is not unimodal and a point head is
+    #         being asked to summarise a mixture with one number.
+    n_mh = next((int(b[2:]) for b in bits if b.startswith("mh")
+                 and b[2:].isdigit()), 0)
+    n_q = next((int(b[1:]) for b in bits if b.startswith("q")
+                and b[1:].isdigit()), 0)
+    QGRID = {3: (0.1, 0.5, 0.9), 5: (0.05, 0.25, 0.5, 0.75, 0.95),
+             7: (0.02, 0.1, 0.25, 0.5, 0.75, 0.9, 0.98)}
+    quantiles = QGRID.get(n_q, ()) if n_q > 1 else ()
     gate_additive = "agate" in bits
     gate = gate or gate_additive
     xenv = "xenv" in bits
@@ -370,7 +435,11 @@ def run_arm(arm, seed, data, args, device):
         xfilter=xfilter, context=ctx, expand=expand, reduce_to=reduce_to,
         gate=gate, envelope=envelope, bandgate=bandgate,
         gate_additive=gate_additive, xenv=xenv, tconv=tconv,
+        horizons=len(data["horizons"]) if n_mh else 1, quantiles=quantiles,
     ).to(device)
+    # Which column of the shared multi-horizon target block is the scored one.
+    hi = data["hi"]
+    model.h_index = hi if n_mh else 0
     if arm.startswith("single"):
         scaler = data["scaler_one"][reg]
         dl = {k: DataLoader(data["one"][reg][k], batch_size=args.batch,
@@ -398,9 +467,28 @@ def run_arm(arm, seed, data, args, device):
         model.train(); t0 = time.time(); seen, nb = {}, 0
         for x, y in dl["train"]:
             x, y = cut(x).to(device), y.to(device)
-            p = model(x)[3]
-            loss, parts = joint_loss(p, y, args, model, arm, dev_sd,
-                                     n_price, scaler)
+            o = model(x)[3]
+            # A single-horizon arm reads the scored column and is numerically
+            # where it was; a multi-horizon arm keeps the whole target block
+            # for the price term and hands the scored median to everything
+            # else, so the regularisers are untouched by the change.
+            y_pt = y[..., hi] if y.dim() > 2 else y
+            p = model.point(o)
+            # The target block has to match what this arm actually predicts.
+            # A quantile-only arm has H = 1 even when the shared dataset is
+            # serving seven horizons, and handing it all seven is a silent
+            # broadcast against the wrong axis.
+            y_full = None
+            if o.dim() > 2:
+                if model.H > 1:
+                    y_full = y
+                else:
+                    y_full = (y[..., hi:hi + 1] if y.dim() > 2
+                              else y.unsqueeze(-1))
+            loss, parts = joint_loss(p, y_pt, args, model, arm, dev_sd,
+                                     n_price, scaler,
+                                     o=o if o.dim() > 2 else None,
+                                     y_full=y_full)
             if decompose and not reduce_to:
                 dec = model.decomposer.decomposer
                 loss = loss + 0.05 * dec.bandwidth_loss(x[:, :1]) \
@@ -416,8 +504,8 @@ def run_arm(arm, seed, data, args, device):
         # Selection reads the price MAE only. Auxiliary targets are there to
         # shape the representation, not to be forecast; selecting on them would
         # pick the epoch that is best at predicting wind.
-        v = evaluate(model, dl["val"], device, scaler, names, n_price, cut)
-        te = evaluate(model, dl["test"], device, scaler, names, n_price, cut)
+        v = evaluate(model, dl["val"], device, scaler, names, n_price, cut, hi)
+        te = evaluate(model, dl["test"], device, scaler, names, n_price, cut, hi)
         flag = ""
         if v["mae_mean"] < best_val - 1e-6:
             best_val, sel_ep, stale = v["mae_mean"], ep, 0
@@ -453,7 +541,7 @@ def run_arm(arm, seed, data, args, device):
                     model.decomposer.coupling.delta.detach().cpu().numpy()
         torch.save(blob, os.path.join(args.save_model, f"{tag}_s{seed}.pt"))
 
-    t = evaluate(model, dl["test"], device, scaler, names, n_price, cut)
+    t = evaluate(model, dl["test"], device, scaler, names, n_price, cut, hi)
 
     if args.save_preds:
         # Saved so the evaluation can be done the way the field does it --
@@ -466,8 +554,15 @@ def run_arm(arm, seed, data, args, device):
         with torch.no_grad():
             for x, y in dl["test"]:
                 x = cut(x).to(device)
-                P.append(scaler.inverse(model(x)[3])[:, :n_price].cpu().numpy())
-                Y.append(scaler.inverse(y.to(device))[:, :n_price].cpu().numpy())
+                # Save the scored prediction, not the raw head: a multi-horizon
+                # or quantile arm emits (B, T, H, Q) and every downstream
+                # paired test expects one number per region per row.
+                p_ = model.point(model(x)[3])
+                y_ = y.to(device)
+                if y_.dim() > 2:
+                    y_ = y_[..., hi]
+                P.append(scaler.inverse(p_)[:, :n_price].cpu().numpy())
+                Y.append(scaler.inverse(y_)[:, :n_price].cpu().numpy())
         np.savez_compressed(
             os.path.join(args.save_preds,
                          re.sub(r"[^A-Za-z0-9._-]", "_", arm) + f"_s{seed}.npz"),
@@ -627,6 +722,8 @@ def main():
                     help="sd of the random seeding of the off-diagonal coupling. "
                          "0 keeps the exact ablation and a dead exogenous pathway "
                          "at step 0; >0 gives the pathway a live start")
+    ap.add_argument("--horizons", default="",
+                    help="comma list, e.g. 1,2,3,4,6,8,12. Empty keeps the\n                         single scored horizon and the original target shape.")
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--threads", type=int, default=3)
     ap.add_argument("--device", default=None,
@@ -710,6 +807,13 @@ def main():
     # One window list for every arm in the run. The dataset is built at the
     # largest context any arm asks for, and a shorter-context arm slices the tail
     # of the same window, so every arm is scored on identical rows.
+    # One horizon list for the whole run, the same way one ctx_max serves every
+    # arm: a single-horizon arm slices the scored column out and is numerically
+    # unchanged, while the window list -- and therefore every scored row -- is
+    # identical across arms. Horizons past the end of the series come back NaN
+    # and are masked, rather than shortening the test set.
+    HS = sorted({int(v) for v in args.horizons.split(",") if v} | {h}) \
+        if args.horizons else [h]
     ctx_max = max([args.context or L] +
                   [int(b[3:]) for a_ in args.arms.split(",")
                    for b in a_.split("/")[-1].split("+") if b.startswith("ctx")])
@@ -730,9 +834,9 @@ def main():
         yj_tr = sc_j.forward(raw["train"][:, [tgt_idx[j]]])
         yj_te = sc_j.forward(raw["test"][:, [tgt_idx[j]]])
         scaler_one[nm] = sc_j
-        one[nm] = {"train": JointDataset(f_tr, yj_tr, tr_starts, L, h, ctx_max),
-                   "val":   JointDataset(f_tr, yj_tr, va_starts, L, h, ctx_max),
-                   "test":  JointDataset(f_te, yj_te, starts["test"], L, h, ctx_max)}
+        one[nm] = {"train": JointDataset(f_tr, yj_tr, tr_starts, L, h, ctx_max, HS),
+                   "val":   JointDataset(f_tr, yj_tr, va_starts, L, h, ctx_max, HS),
+                   "test":  JointDataset(f_te, yj_te, starts["test"], L, h, ctx_max, HS)}
 
     # The deviation term is taken in the standardised space the loss lives in, so
     # its scale is measured there too. Without this the weight would silently
@@ -755,12 +859,13 @@ def main():
         print(f"auxiliary targets ({len(aux_idx)}): {', '.join(aux_names)}")
 
     data = {
-        "train": JointDataset(f_tr, y_tr, tr_starts, L, h, ctx_max),
-        "val":   JointDataset(f_tr, y_tr, va_starts, L, h, ctx_max),
-        "test":  JointDataset(f_te, y_te, starts["test"], L, h, ctx_max),
+        "train": JointDataset(f_tr, y_tr, tr_starts, L, h, ctx_max, HS),
+        "val":   JointDataset(f_tr, y_tr, va_starts, L, h, ctx_max, HS),
+        "test":  JointDataset(f_te, y_te, starts["test"], L, h, ctx_max, HS),
         "ctx_max": ctx_max,
         "n_feat": f_tr.shape[1], "targets": tgt_idx, "names": names,
         "scaler": sc, "one": one, "scaler_one": scaler_one, "chans": chans,
+        "horizons": HS, "hi": HS.index(h),
         "expand_idx": [chans.index(c) for c in args.expand.split(",")
                        if c and c in chans],
         "aux_idx": aux_idx, "aux_names": aux_names, "dev_sd": dev_sd,
