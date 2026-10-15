@@ -147,7 +147,7 @@ class JointSpatioTemporalNVMD(nn.Module):
                  context: int = None, expand=(), gate: bool = False,
                  envelope: bool = False, bandgate: bool = False,
                  gate_additive: bool = False, xenv: bool = False,
-                 tconv: bool = False, exo_rank: int = 1):
+                 tconv: bool = False, exo_rank: int = 1, mca: int = 0):
         """`xfilter` is the only part of this model a linear reader cannot copy.
 
         A partition-of-unity band decomposition is an invertible linear map, and
@@ -184,6 +184,7 @@ class JointSpatioTemporalNVMD(nn.Module):
         self.decomposer = StructuredSpectralNVMD(
             K=K, signal_len=self.ctx, d_model=d_model, adapt=adapt,
             gate=gate, envelope=envelope, gate_additive=gate_additive,
+            mca=mca,
         )
         if xenv and not envelope:
             raise ValueError("+xenv needs +env: it reuses the analytic signal")
@@ -286,6 +287,9 @@ class JointSpatioTemporalNVMD(nn.Module):
                                                       self.K, L))
             rich = torch.cat(
                 [rich, xr.reshape(B, len(self.targets), 2 * self.K, L)], dim=2)
+        if "mca" in aux:
+            mc = aux["mca"].reshape(B, C, 3, L)[:, self.targets]
+            rich = mc if rich is None else torch.cat([rich, mc], dim=2)
         if "gated" in aux:
             g = aux["gated"].reshape(B, C, self.K, L)[:, self.targets]
             rich = g if rich is None else torch.cat([rich, g], dim=2)
@@ -353,7 +357,7 @@ class JointForecaster(nn.Module):
                  envelope: bool = False, bandgate: bool = False,
                  gate_additive: bool = False, xenv: bool = False,
                  tconv: bool = False, horizons: int = 1, quantiles=(),
-                 pool: str = "last", exo_rank: int = 1):
+                 pool: str = "last", exo_rank: int = 1, mca: int = 0):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -381,7 +385,7 @@ class JointForecaster(nn.Module):
                 coupling_init=coupling_init, xfilter=xfilter, context=context,
                 expand=expand, gate=gate, envelope=envelope,
                 bandgate=bandgate, gate_additive=gate_additive, xenv=xenv,
-                tconv=tconv, exo_rank=exo_rank,
+                tconv=tconv, exo_rank=exo_rank, mca=mca,
             )
         self.reduce = None
         if reduce_to:
@@ -391,7 +395,8 @@ class JointForecaster(nn.Module):
             (((3 if xfilter else 2) + len(expand) + (2 if envelope else 0)
               + (1 if bandgate else 0) + (1 if gate_additive else 0)
               + (2 if xenv else 0) + (1 if tconv else 0)
-              + (exo_rank - 1 if coupling else 0)) * K)
+              + (exo_rank - 1 if coupling else 0)) * K
+             + (3 if mca else 0))
             if decompose else (n_chan or C))
         # Multi-horizon and quantile output. The window list, the scored rows
         # and every regularisation term are unchanged: the trunk is the same

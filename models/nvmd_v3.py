@@ -83,7 +83,7 @@ class StructuredSpectralNVMD(nn.Module):
     def __init__(self, K: int = 8, signal_len: int = 96, d_model: int = 128,
                  adapt: float = 0.5, bw_init: float = 0.6, ratio: float = 1.8,
                  gate: bool = False, envelope: bool = False,
-                 gate_additive: bool = False):
+                 gate_additive: bool = False, mca: int = 0):
         super().__init__()
         self.K = K
         self.L = signal_len
@@ -99,6 +99,34 @@ class StructuredSpectralNVMD(nn.Module):
         # gated copy over as extra channels instead, which is the discipline
         # CrossFilter already follows.
         self.gate_additive = gate_additive
+        # Morphological split: smooth + sparse, instead of only by frequency.
+        #
+        # A Gaussian band bank is localised in frequency and maximally
+        # DELOCALISED in time, and the error here is dominated by time-localised
+        # transients -- 115 spike rows carry 23.5% of it and negative-price
+        # episodes another 27.5%. A spike is broadband in Fourier, so the bank
+        # smears the one thing that matters across all K bands. Nothing
+        # downstream can unsmear it, which is why every readout change so far
+        # has been worth tenths of a percent.
+        #
+        # Electricity prices do not decompose by frequency, they decompose by
+        # mechanism: p = base + cycle + scarcity premium - oversupply discount.
+        # The first two are smooth and periodic and Fourier is right for them.
+        # The other two are sparse, time-localised, and ASYMMETRIC -- a spike
+        # runs to +15,500 $/MWh and an oversupply episode to -1,000, fifteen
+        # times smaller and a different mechanism. One symmetric sinusoidal
+        # basis cannot represent either.
+        #
+        # `mca` = how many of the lowest bands count as the smooth part. The
+        # residual is soft-thresholded into a nonnegative and a nonpositive
+        # sparse component with separately learned thresholds, which is
+        # nonlinear and time-localised, i.e. exactly what the bank cannot do.
+        # Thresholds scale with the residual's own RMS in the window, so the
+        # split adapts per window rather than being a fixed level.
+        self.mca = int(mca)
+        if self.mca:
+            self.tau_p = nn.Parameter(torch.tensor(1.5))
+            self.tau_n = nn.Parameter(torch.tensor(1.5))
         if gate:
             # Magnitude-dependent spectral gain. The masks are a partition of
             # unity, so sum_k x_k == x exactly and the bank hands the head a
@@ -239,6 +267,28 @@ class StructuredSpectralNVMD(nn.Module):
         inst = torch.cat([inst[..., :1], inst], dim=-1)             # (B, K, L)
         return torch.cat([torch.log1p(env), inst], dim=1)           # (B, 2K, L)
 
+    def morph(self, imfs: torch.Tensor) -> torch.Tensor:
+        """(B, K, L) bands -> (B, 3, L): sparse up, sparse down, texture.
+
+        smooth   the lowest `mca` bands, which carry the trend and the daily
+                 and weekly cycles
+        s_pos    soft-thresholded positive residual: the scarcity premium
+        s_neg    soft-thresholded negative residual: the oversupply discount
+        texture  whatever is left, so the three sum back to x - smooth and
+                 nothing is thrown away
+
+        Separate thresholds because the two tails are not reflections of each
+        other: the market cap is +15,500 $/MWh and the floor is -1,000.
+        """
+        smooth = imfs[:, :self.mca].sum(1)                     # (B, L)
+        r = imfs.sum(1) - smooth
+        rms = r.pow(2).mean(-1, keepdim=True).add(self.EPS).sqrt()
+        tp = F.softplus(self.tau_p) * rms
+        tn = F.softplus(self.tau_n) * rms
+        s_pos = F.relu(r - tp)
+        s_neg = -F.relu(-r - tn)
+        return torch.stack([s_pos, s_neg, r - s_pos - s_neg], dim=1)
+
     def decompose_rich(self, x: torch.Tensor):
         """x: (B, 1, L) -> imfs (B, K, L), masks (B, K, F), aux dict.
 
@@ -261,10 +311,15 @@ class StructuredSpectralNVMD(nn.Module):
             else:
                 W = Wg
         if not self.envelope:
-            return torch.fft.irfft(W, n=L, dim=-1), m, aux
+            imfs = torch.fft.irfft(W, n=L, dim=-1)
+            if self.mca:
+                aux["mca"] = self.morph(imfs)
+            return imfs, m, aux
         z = self.analytic(W, L)                                     # (B, K, L)
         aux["z"] = z
         aux["env"] = self.env_feats(z)
+        if self.mca:
+            aux["mca"] = self.morph(z.real)
         return z.real, m, aux
 
     def forward(self, x: torch.Tensor):

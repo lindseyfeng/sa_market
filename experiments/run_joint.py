@@ -407,6 +407,14 @@ def run_arm(arm, seed, data, args, device):
     # A rank-1 projection of 85 non-target channels onto one scalar is why
     # this architecture gets worse as the panel grows while a ridge on the
     # same channels gets better.
+    # +mca<N> splits the signal by MECHANISM instead of only by frequency:
+    # the lowest N bands are the smooth trend-and-cycle part, and the residual
+    # is soft-thresholded into a nonnegative scarcity premium and a nonpositive
+    # oversupply discount. Both are sparse and time-localised, which a Gaussian
+    # band bank cannot represent -- it is localised in frequency and maximally
+    # delocalised in time, so it smears a spike across every band.
+    mca = next((int(b[3:]) for b in bits if b.startswith("mca")
+                and b[3:].isdigit()), 0)
     exo_rank = next((int(b[3:]) for b in bits if b.startswith("exo")
                      and b[3:].isdigit()), 1)
     pool = "attn" if "attn" in bits else ("cat" if "cat" in bits else "last")
@@ -447,7 +455,7 @@ def run_arm(arm, seed, data, args, device):
         gate=gate, envelope=envelope, bandgate=bandgate,
         gate_additive=gate_additive, xenv=xenv, tconv=tconv,
         horizons=len(data["horizons"]) if n_mh else 1, quantiles=quantiles,
-        pool=pool, exo_rank=exo_rank,
+        pool=pool, exo_rank=exo_rank, mca=mca,
     ).to(device)
     # Which column of the shared multi-horizon target block is the scored one.
     hi = data["hi"]
