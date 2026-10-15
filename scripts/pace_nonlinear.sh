@@ -33,6 +33,14 @@ mkdir -p logs results preds
 
 ACCT="${ACCT:-gts-sd111}"
 H="${HORIZON:-6}"
+# A tag for this submission. Without one, the runner's resume logic finds an
+# existing result JSON and silently does nothing -- which is what happened to
+# batch 2: joint/lstm and joint/lstm+env were resubmitted to get an in-batch
+# control, skipped themselves, and left the batch comparing against a control
+# trained on different hardware. Measured, that is worth 0.28 MAE here.
+TAG="${RUNTAG:-nl}"
+PANEL="${PANEL:-data/raw/compound_joint_2018_2022.csv}"
+HZ="${HORIZONS:-}"
 # --partition is NOT honoured on this cluster. Measured 2026-10-15: seven jobs
 # submitted with --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000 and an
 # untyped --gres=gpu:1; six of them ran in gpu-v100, which was not in the list,
@@ -70,23 +78,23 @@ for spec in $SPECS; do
   # contain '/'.
   tag=$(printf '%s' "$spec" | tr '/:+@.' '_____')
   sbatch --account="$ACCT" --qos=inferno \
-    --job-name="nl${H}_${tag}" \
+    --job-name="${TAG}${H}_${tag}" \
     --partition=gpu-a100,gpu-l40s,gpu-h100,gpu-h200,gpu-rtx6000 \
     --constraint="$FEATURES" \
     --nodes=1 --ntasks-per-node=1 --cpus-per-task=1 --gres=gpu:1 \
     --mem-per-cpu=32G \
     --time="${WALL:-00:30:00}" \
-    --output="logs/nl${H}_${tag}_%j.out" \
+    --output="logs/${TAG}${H}_${tag}_%j.out" \
     --wrap "cd \$SLURM_SUBMIT_DIR && \
       nvidia-smi --query-gpu=name --format=csv,noheader && \
       $PY -u -m experiments.run_joint \
-        --panel data/raw/compound_joint_2018_2022.csv \
+        --panel $PANEL \
         --train-year 2018,2019,2020 --test-year 2021 --horizon $H \
-        --arms '$arm' --seeds 1 --epochs $EPOCHS --patience $EPOCHS \
+        ${HZ:+--horizons $HZ} --arms '$arm' --seeds 1 --epochs $EPOCHS --patience $EPOCHS \
         --w-dev 1.0 --w-bias 0.1 --w-sparse 1e-4 --loss l1 $jac \
-        --save-model runs/nl${H}/${tag} \
+        --save-model runs/${TAG}${H}/${tag} \
         --threads 1 --workers 0 \
-        --save-preds preds/nl${H}/${tag} --out results/nl${H}_${tag}.json" \
+        --save-preds preds/${TAG}${H}/${tag} --out results/${TAG}${H}_${tag}.json" \
     | while read -r line; do printf '  %-34s %s\n' "$spec" "$line"; done
 done
 echo
