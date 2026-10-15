@@ -67,6 +67,7 @@ Measured on one afternoon, same model, same account:
 | 1 GPU, 1 core, 5 min | **3 min 51 s** |
 | 1 GPU, 1 core, `--qos=embers` | never landed |
 | 1 GPU, pinned `--partition=gpu-v100` | never landed |
+| 1 GPU, 1 core, 5 min, `--constraint=A100\|H100\|H200\|L40S\|RTX6000` | under 4 min, landed on an H200 |
 
 **The scheduler plans around what you declare, not what you use.** Ask for one
 core and twenty minutes. A four-core request came back as eight cores with 64 GB
@@ -77,9 +78,10 @@ Things that did *not* help:
 
 - `embers` has priority 0. It is the free tier and it is *slower*; `inferno`
   landed in under a minute while an identical `embers` job sat for ten.
-- Dropping the GPU type from `--gres=gpu:1` does not let a job cross partitions.
-  Partitions are defined by node feature, so Slurm still placed it in
-  `gpu-v100`. List them: `--partition=gpu-a100,gpu-l40s,gpu-h100,gpu-rtx6000`.
+- Listing partitions does not keep a job off a GPU you cannot use. An untyped
+  `--gres=gpu:1` lets the scheduler place the job in a partition that is not in
+  the list at all -- six of seven did exactly that. Constrain on the node
+  feature instead; see the next section.
 - `interactive-gpu` appears in `sacctmgr show qos` but is not submittable with
   sbatch.
 - No GPU node on the cluster is ever `idle`. Every one is `alloc`, `mix` or
