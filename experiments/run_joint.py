@@ -321,6 +321,23 @@ def run_arm(arm, seed, data, args, device):
     #   +bgate   aggregate the bands: a 3-tap conv along the band axis plus a
     #            FiLM gate driven by the band envelopes (needs +env)
     bandgate = "bgate" in bits
+    # Second round, 2026-10-15. The first sweep said additive features help and
+    # in-place gates hurt, monotonically: +env -3.2% against the linear bank
+    # (p=0.000), +gate+env -2.7%, +gate+env+bgate -1.5%, +gate alone -0.7%
+    # (p=0.043). gate_c was 0.32-0.38 in every gated arm, so the gates had very
+    # much opened; they opened and made it worse. The reading these three test
+    # is that an in-place gate destroys the partition of unity -- measured, it
+    # breaks sum_k x_k = x by 0.72 once open -- and takes information off the
+    # head, where +env only ever adds channels.
+    #   +agate   the same spectral gain, but the lossless bands are kept and
+    #            the gated copy is handed over as extra channels
+    #   +xenv    envelope and instantaneous frequency of the *exogenous* mix.
+    #            Coupling is linear, so the magnitude has to be taken after it
+    #   +tconv   one depthwise conv per band, dilated to that band's own period
+    gate_additive = "agate" in bits
+    gate = gate or gate_additive
+    xenv = "xenv" in bits
+    tconv = "tconv" in bits
     adapt = next((int(b[2:]) / 100.0 for b in bits if b.startswith("ad")
                   and b[2:].isdigit()), 0.0)
     # "red16" keeps the width the band pathway produces and drops the band
@@ -352,6 +369,7 @@ def run_arm(arm, seed, data, args, device):
         decompose=decompose, n_chan=data["n_feat"],
         xfilter=xfilter, context=ctx, expand=expand, reduce_to=reduce_to,
         gate=gate, envelope=envelope, bandgate=bandgate,
+        gate_additive=gate_additive, xenv=xenv, tconv=tconv,
     ).to(device)
     if arm.startswith("single"):
         scaler = data["scaler_one"][reg]
@@ -471,7 +489,7 @@ def run_arm(arm, seed, data, args, device):
     out["reduce_to"] = reduce_to
     if base == "joint" and decompose and not reduce_to:
         out["coupling"] = coupling_report(model, data, names, targets)
-    if (gate or bandgate) and decompose and not reduce_to:
+    if (gate or bandgate or tconv) and decompose and not reduce_to:
         out["nonlinearity"] = nonlinearity_report(model)
         print("  nonlinearity: " + "  ".join(
             f"{k}={v:.4f}" for k, v in out["nonlinearity"].items()))
@@ -500,6 +518,9 @@ def nonlinearity_report(model):
     if getattr(bank, "gate", False):
         rep["gate_c"] = float(bank.g_c.abs().mean())
         rep["gate_c_max"] = float(bank.g_c.abs().max())
+    tc = getattr(dec, "tconv", None)
+    if tc is not None:
+        rep["tconv_w"] = float(sum(c.weight.abs().sum() for c in tc.convs))
     agg = getattr(dec, "aggregator", None)
     if agg is not None:
         w = agg.film[-1].weight

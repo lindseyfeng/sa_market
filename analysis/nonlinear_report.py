@@ -55,10 +55,20 @@ def paired(f, ref):
     return p[a], y[a], pr[b], yr[b], np.round(yr[b], 2)
 
 
-def gate_stats(models_dir, arm):
+def gate_stats(models_dir, arm, subdir=None):
+    """Checkpoint names come from the ARM, and two jobs can share an arm name.
+
+    `+gate+env+bgate` was run twice, once with --w-jacobian 0.25, so both wrote
+    `joint_lstm_gate_env_bgate_s1.pt`. They were saved into per-job directories
+    precisely so they would not collide -- and then a recursive glob taking
+    hits[0] reported one arm's gate statistics under both names anyway. Scope
+    the search to the job's own directory when the caller knows it.
+    """
     import torch
     tag = re.sub(r"[^A-Za-z0-9._-]", "_", arm)
-    hits = glob.glob(os.path.join(models_dir, "**", f"{tag}_s*.pt"), recursive=True)
+    root = os.path.join(models_dir, subdir) if subdir else models_dir
+    hits = sorted(glob.glob(os.path.join(root, "**", f"{tag}_s*.pt"),
+                            recursive=True))
     if not hits:
         return {}
     st = torch.load(hits[0], map_location="cpu", weights_only=False)["state"]
@@ -109,7 +119,8 @@ def main():
             if rname == "joint":
                 for n, m in SEGS:
                     r[n] = float(e[m(ym)].mean())
-        r.update(gate_stats(a.models, tag.split("  [")[0]))
+        sub = tag.split("  [")[1][:-1] if "  [" in tag else None
+        r.update(gate_stats(a.models, tag.split("  [")[0], sub))
         rows.append(r)
     rows.sort(key=lambda r: r["mae"])
 

@@ -82,12 +82,23 @@ class StructuredSpectralNVMD(nn.Module):
 
     def __init__(self, K: int = 8, signal_len: int = 96, d_model: int = 128,
                  adapt: float = 0.5, bw_init: float = 0.6, ratio: float = 1.8,
-                 gate: bool = False, envelope: bool = False):
+                 gate: bool = False, envelope: bool = False,
+                 gate_additive: bool = False):
         super().__init__()
         self.K = K
         self.L = signal_len
         self.F = signal_len // 2 + 1
         self.gate, self.envelope = gate, envelope
+        # Measured 2026-10-15: gating in place cost 0.7-1.7% against the arm
+        # that only *adds* features, and the checkpoints showed the gate had
+        # very much opened (gate_c 0.34 mean, 0.98 max), so it is not that the
+        # gate failed to train. The likely mechanism is that an in-place gate
+        # destroys the partition of unity -- sum_k x_k stops reconstructing x
+        # -- and takes information away from the head, where +env only ever
+        # adds channels. `gate_additive` keeps the lossless bands and hands the
+        # gated copy over as extra channels instead, which is the discipline
+        # CrossFilter already follows.
+        self.gate_additive = gate_additive
         if gate:
             # Magnitude-dependent spectral gain. The masks are a partition of
             # unity, so sum_k x_k == x exactly and the bank hands the head a
@@ -200,24 +211,16 @@ class StructuredSpectralNVMD(nn.Module):
         Z[..., 1:hi] = Z[..., 1:hi] * 2
         return torch.fft.ifft(Z, n=L, dim=-1)
 
-    def decompose_rich(self, x: torch.Tensor):
-        """x: (B, 1, L) -> imfs (B, K, L), masks (B, K, F), extra or None.
+    @classmethod
+    def env_feats(cls, z: torch.Tensor) -> torch.Tensor:
+        """Analytic signal -> (B, 2K, L): log1p envelope, instantaneous freq.
 
-        `extra` is (B, 2K, L): per band, log1p of the analytic envelope and the
-        instantaneous frequency in cycles/step. Instantaneous frequency is the
-        phase of z(t+1) * conj(z(t)), which needs no unwrapping and is bounded
-        in [-0.5, 0.5] by construction.
+        Exposed on its own because the exogenous pathway needs the same two
+        features of a *mix* of bands, and mixing is linear, so the analytic
+        signal of the mix is the mix of the analytic signals -- the magnitude
+        has to be taken after the mix, not before.
         """
-        L = x.shape[-1]
-        m = self.masks(x)
-        Xf = torch.fft.rfft(x.squeeze(1), n=L, dim=-1)              # (B, F)
-        W = Xf.unsqueeze(1) * m                                     # (B, K, F)
-        if self.gate:
-            W = W * self.gain(W)
-        if not self.envelope:
-            return torch.fft.irfft(W, n=L, dim=-1), m, None
-        z = self.analytic(W, L)                                     # (B, K, L)
-        env = torch.sqrt(z.real ** 2 + z.imag ** 2 + self.EPS)      # (B, K, L)
+        env = torch.sqrt(z.real ** 2 + z.imag ** 2 + cls.EPS)
         d = z[..., 1:] * z[..., :-1].conj()
         # atan2's gradient is 1/(x^2 + y^2). |d| gets down to 1e-5 on real
         # windows, which is a gradient of 1e10 straight into the bank and the
@@ -231,11 +234,38 @@ class StructuredSpectralNVMD(nn.Module):
         # Offsetting first sends a dead band to atan2(0, 1) = 0, the right
         # "no phase information" value, with a finite derivative.
         dr, di = d.real + 1e-8, d.imag
-        den = torch.sqrt(dr ** 2 + di ** 2 + self.EPS)
+        den = torch.sqrt(dr ** 2 + di ** 2 + cls.EPS)
         inst = torch.atan2(di / den, dr / den) / (2.0 * math.pi)
         inst = torch.cat([inst[..., :1], inst], dim=-1)             # (B, K, L)
-        extra = torch.cat([torch.log1p(env), inst], dim=1)          # (B, 2K, L)
-        return z.real, m, extra
+        return torch.cat([torch.log1p(env), inst], dim=1)           # (B, 2K, L)
+
+    def decompose_rich(self, x: torch.Tensor):
+        """x: (B, 1, L) -> imfs (B, K, L), masks (B, K, F), aux dict.
+
+        `aux` carries whatever the flags asked for, all optional:
+          'env'    (B, 2K, L)  log1p envelope and instantaneous frequency
+          'z'      (B, K, L)   the complex analytic signal, for callers that
+                               have to mix bands before taking a magnitude
+          'gated'  (B, K, L)   the magnitude-gated modes, when the gate is
+                               additive and the lossless modes are kept
+        """
+        L = x.shape[-1]
+        m = self.masks(x)
+        Xf = torch.fft.rfft(x.squeeze(1), n=L, dim=-1)              # (B, F)
+        W = Xf.unsqueeze(1) * m                                     # (B, K, F)
+        aux = {}
+        if self.gate:
+            Wg = W * self.gain(W)
+            if self.gate_additive:
+                aux["gated"] = torch.fft.irfft(Wg, n=L, dim=-1)
+            else:
+                W = Wg
+        if not self.envelope:
+            return torch.fft.irfft(W, n=L, dim=-1), m, aux
+        z = self.analytic(W, L)                                     # (B, K, L)
+        aux["z"] = z
+        aux["env"] = self.env_feats(z)
+        return z.real, m, aux
 
     def forward(self, x: torch.Tensor):
         """x: (B, 1, L) -> imfs (B, K, L) with sum(imfs) == x, masks (B, K, F)."""

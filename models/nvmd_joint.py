@@ -33,10 +33,50 @@ deviation from the identity, so at step 0 the coupled arm *is* the uncoupled one
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models.nvmd_v3 import StructuredSpectralNVMD
 from models.nvmd_st import PerBandSpatialCoupling, CrossFilter
 
+
+
+
+class TemporalBandConv(nn.Module):
+    """One depthwise convolution per band, dilated to that band's own period.
+
+    Band k oscillates at roughly `centre_k` cycles per step, so whatever
+    structure it carries lives on a scale of 1/centre_k steps. A single kernel
+    width shared across bands is wrong at both ends: it either smears the trend
+    or cannot span one cycle of the fastest band. Setting the dilation per band
+    makes every kernel cover about half of its own period, which is the one
+    thing a plain LSTM over 96 raw steps cannot cheaply do.
+
+    Output is zero-initialised and GELU(0) = 0, so the block contributes a
+    channel of zeros at step 0 and the head starts exactly where it would have
+    without it. Dilations come from the *initial* centres, so the kernel
+    geometry is fixed even though the centres are learned.
+    """
+
+    def __init__(self, K: int, centres, L: int, kernel: int = 5):
+        super().__init__()
+        self.K, self.kernel = K, kernel
+        self.dilations = []
+        for c in [float(v) for v in centres]:
+            span = float(L) if c <= 1e-6 else min(1.0 / c, float(L))
+            d = int(round(span / 2.0 / (kernel - 1)))
+            self.dilations.append(max(1, min(d, max(1, L // (kernel - 1)))))
+        self.convs = nn.ModuleList([
+            nn.Conv1d(1, 1, kernel, padding=((kernel - 1) * d) // 2, dilation=d)
+            for d in self.dilations])
+        for c in self.convs:
+            nn.init.zeros_(c.weight)
+            nn.init.zeros_(c.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, K, L) -> (B, K, L)"""
+        L = x.shape[-1]
+        out = [self.convs[k](x[:, k:k + 1])[..., :L] for k in range(self.K)]
+        return F.gelu(torch.cat(out, dim=1))
 
 
 class BandAggregator(nn.Module):
@@ -105,7 +145,9 @@ class JointSpatioTemporalNVMD(nn.Module):
                  d_model: int = 128, adapt: float = 0.0, coupling: bool = True,
                  coupling_init: float = 0.0, xfilter: bool = False,
                  context: int = None, expand=(), gate: bool = False,
-                 envelope: bool = False, bandgate: bool = False):
+                 envelope: bool = False, bandgate: bool = False,
+                 gate_additive: bool = False, xenv: bool = False,
+                 tconv: bool = False):
         """`xfilter` is the only part of this model a linear reader cannot copy.
 
         A partition-of-unity band decomposition is an invertible linear map, and
@@ -137,11 +179,19 @@ class JointSpatioTemporalNVMD(nn.Module):
         self.register_buffer("expand",
                              torch.as_tensor(list(expand), dtype=torch.long))
         self.register_buffer("targets", torch.as_tensor(list(targets), dtype=torch.long))
-        self.envelope = envelope
+        self.envelope, self.xenv = envelope, xenv
+        self.gate_additive = gate_additive
         self.decomposer = StructuredSpectralNVMD(
             K=K, signal_len=self.ctx, d_model=d_model, adapt=adapt,
-            gate=gate, envelope=envelope,
+            gate=gate, envelope=envelope, gate_additive=gate_additive,
         )
+        if xenv and not envelope:
+            raise ValueError("+xenv needs +env: it reuses the analytic signal")
+        self.tconv = None
+        if tconv:
+            with torch.no_grad():
+                c0, _ = self.decomposer.bands(None)
+            self.tconv = TemporalBandConv(K, c0[0].tolist(), signal_len)
         self.coupling = PerBandSpatialCoupling(C, K, enabled=coupling,
                                                init=coupling_init)
         self.xfilter = CrossFilter(K) if xfilter else None
@@ -186,7 +236,7 @@ class JointSpatioTemporalNVMD(nn.Module):
 
     def forward(self, x):
         B, C, L = x.shape
-        modes, masks, extra = self.decomposer.decompose_rich(x.reshape(B * C, 1, L))
+        modes, masks, aux = self.decomposer.decompose_rich(x.reshape(B * C, 1, L))
         modes = modes.reshape(B, C, self.K, L)
         own = modes[:, self.targets]                       # (B, T, K, L) lossless
         exo = self.exogenous(modes)                        # (B, T, K, L)
@@ -194,8 +244,26 @@ class JointSpatioTemporalNVMD(nn.Module):
         # out of `own` so the lossless stack still reaches the head untouched
         # and the FiLM path below still sees exactly K channels.
         rich = None
-        if extra is not None:
-            rich = extra.reshape(B, C, 2 * self.K, L)[:, self.targets]
+        if "env" in aux:
+            rich = aux["env"].reshape(B, C, 2 * self.K, L)[:, self.targets]
+        # The exogenous mix is linear in the bands, so the analytic signal of
+        # the mix is the mix of the analytic signals -- which means the
+        # magnitude has to be taken *after* coupling, not before. These are the
+        # drivers' energy and phase at each scale, the thing the per-band
+        # scalar mix throws away.
+        if self.xenv:
+            z = aux["z"].reshape(B, C, self.K, L)
+            A = self.coupling.matrices()
+            w = A[:, self.targets, :].clone()
+            w[:, torch.arange(len(self.targets)), self.targets] = 0.0
+            zx = torch.einsum("bckl,ktc->btkl", z, w.to(z.dtype))
+            xr = self.decomposer.env_feats(zx.reshape(B * len(self.targets),
+                                                      self.K, L))
+            rich = torch.cat(
+                [rich, xr.reshape(B, len(self.targets), 2 * self.K, L)], dim=2)
+        if "gated" in aux:
+            g = aux["gated"].reshape(B, C, self.K, L)[:, self.targets]
+            rich = g if rich is None else torch.cat([rich, g], dim=2)
         if self.out_len < L:                               # long bank view, short head view
             own, exo = own[..., -self.out_len:], exo[..., -self.out_len:]
             if rich is not None:
@@ -208,6 +276,11 @@ class JointSpatioTemporalNVMD(nn.Module):
             # not something the target index should change.
             ex = ex.unsqueeze(1).expand(-1, own.shape[1], -1, -1, -1)
             ex = ex.reshape(B, own.shape[1], -1, own.shape[-1])
+        if self.tconv is not None:
+            B_, T_, _, L_ = own.shape
+            tc = self.tconv(own.reshape(B_ * T_, self.K, L_)
+                            ).reshape(B_, T_, self.K, L_)
+            rich = tc if rich is None else torch.cat([rich, tc], dim=2)
         agg = None
         if self.aggregator is not None:
             B_, T_, _, L_ = own.shape
@@ -252,7 +325,9 @@ class JointForecaster(nn.Module):
                  decompose: bool = True, n_chan: int = None,
                  xfilter: bool = False, context: int = None, expand=(),
                  reduce_to: int = 0, gate: bool = False,
-                 envelope: bool = False, bandgate: bool = False):
+                 envelope: bool = False, bandgate: bool = False,
+                 gate_additive: bool = False, xenv: bool = False,
+                 tconv: bool = False):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -278,7 +353,8 @@ class JointForecaster(nn.Module):
                 d_model=d_model, adapt=adapt, coupling=coupling,
                 coupling_init=coupling_init, xfilter=xfilter, context=context,
                 expand=expand, gate=gate, envelope=envelope,
-                bandgate=bandgate,
+                bandgate=bandgate, gate_additive=gate_additive, xenv=xenv,
+                tconv=tconv,
             )
         self.reduce = None
         if reduce_to:
@@ -286,7 +362,8 @@ class JointForecaster(nn.Module):
             self.decompose = False
         n_in = reduce_to if reduce_to else (
             (((3 if xfilter else 2) + len(expand) + (2 if envelope else 0)
-              + (1 if bandgate else 0)) * K)
+              + (1 if bandgate else 0) + (1 if gate_additive else 0)
+              + (2 if xenv else 0) + (1 if tconv else 0)) * K)
             if decompose else (n_chan or C))
         if head == "lstm":
             self.lstm = nn.LSTM(n_in, lstm_hidden, lstm_layers, batch_first=True,
