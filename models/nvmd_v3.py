@@ -84,7 +84,8 @@ class StructuredSpectralNVMD(nn.Module):
                  adapt: float = 0.5, bw_init: float = 0.6, ratio: float = 1.8,
                  gate: bool = False, envelope: bool = False,
                  gate_additive: bool = False, mca: int = 0,
-                 phase: bool = False, vmd_iters: int = 0):
+                 phase: bool = False, vmd_iters: int = 0,
+                 vmd_step: float = 0.0):
         super().__init__()
         self.K = K
         self.L = signal_len
@@ -162,6 +163,20 @@ class StructuredSpectralNVMD(nn.Module):
         # is parameter-free, differentiable and nonlinear in |X|^2, so this is
         # also the first thing here that makes the decomposition genuinely
         # nonlinear in its input rather than nonlinear in its weights.
+        # How far a centre is allowed to move from where it started. The
+        # unconstrained update cost 1.9%, and this repo's own history says why:
+        # v2 emitted free centres and only 24% of windows preserved channel
+        # ordering, which is exactly what v3's ordered cumulative-softmax
+        # centres were built to fix. Per-window adaptation brings that back --
+        # with fixed centres channel k always means "the daily cycle", with
+        # free centres it means something different in every window and the
+        # LSTM is reading a channel whose semantics drift. Measured, band 7
+        # moved from 0.3436 to 0.3006 between two adjacent windows.
+        #
+        # `vmd_step` > 0 clamps each centre to init +/- vmd_step * (local band
+        # gap), keeping VMD's adaptivity while the channel keeps its identity.
+        # 0 leaves the update unconstrained.
+        self.vmd_step = float(vmd_step)
         self.vmd_iters = int(vmd_iters)
         self.mca = int(mca)
         if self.mca:
@@ -256,11 +271,18 @@ class StructuredSpectralNVMD(nn.Module):
         """
         f = self.freqs.view(1, 1, -1)
         p = Xf.abs().pow(2).unsqueeze(1)                           # (B, 1, F)
+        c0 = centres
+        gap = torch.diff(c0, dim=-1)
+        gap = torch.cat([gap[..., :1], gap], dim=-1).clamp(min=1e-4)
         for _ in range(self.vmd_iters):
             m = self._masks_from(centres, bw)                      # (B, K, F)
             e = (m ** 2) * p                                       # |u_k(w)|^2
             centres = ((f * e).sum(-1) / e.sum(-1).clamp(min=1e-12))
             centres = centres.clamp(0.0, float(self.freqs[-1]))
+            if self.vmd_step > 0:
+                lo = (c0 - self.vmd_step * gap).clamp(min=0.0)
+                hi = (c0 + self.vmd_step * gap).clamp(max=float(self.freqs[-1]))
+                centres = torch.maximum(torch.minimum(centres, hi), lo)
             centres, _ = torch.sort(centres, dim=-1)
         return centres
 

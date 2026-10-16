@@ -148,7 +148,8 @@ class JointSpatioTemporalNVMD(nn.Module):
                  envelope: bool = False, bandgate: bool = False,
                  gate_additive: bool = False, xenv: bool = False,
                  tconv: bool = False, exo_rank: int = 1, mca: int = 0,
-                 phase: bool = False, vmd_iters: int = 0):
+                 phase: bool = False, vmd_iters: int = 0,
+                 vmd_step: float = 0.0):
         """`xfilter` is the only part of this model a linear reader cannot copy.
 
         A partition-of-unity band decomposition is an invertible linear map, and
@@ -185,7 +186,7 @@ class JointSpatioTemporalNVMD(nn.Module):
         self.decomposer = StructuredSpectralNVMD(
             K=K, signal_len=self.ctx, d_model=d_model, adapt=adapt,
             gate=gate, envelope=envelope, gate_additive=gate_additive,
-            mca=mca, phase=phase, vmd_iters=vmd_iters,
+            mca=mca, phase=phase, vmd_iters=vmd_iters, vmd_step=vmd_step,
         )
         if xenv and not envelope:
             raise ValueError("+xenv needs +env: it reuses the analytic signal")
@@ -359,7 +360,8 @@ class JointForecaster(nn.Module):
                  gate_additive: bool = False, xenv: bool = False,
                  tconv: bool = False, horizons: int = 1, quantiles=(),
                  pool: str = "last", exo_rank: int = 1, mca: int = 0,
-                 phase: bool = False, vmd_iters: int = 0):
+                 phase: bool = False, vmd_iters: int = 0,
+                 vmd_step: float = 0.0):
         """`head` selects what reads the bands.
 
         "lstm" is the original: a bidirectional LSTM whose *last hidden state*
@@ -388,7 +390,7 @@ class JointForecaster(nn.Module):
                 expand=expand, gate=gate, envelope=envelope,
                 bandgate=bandgate, gate_additive=gate_additive, xenv=xenv,
                 tconv=tconv, exo_rank=exo_rank, mca=mca, phase=phase,
-                vmd_iters=vmd_iters,
+                vmd_iters=vmd_iters, vmd_step=vmd_step,
             )
         self.reduce = None
         if reduce_to:

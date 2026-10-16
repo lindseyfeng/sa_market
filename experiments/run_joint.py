@@ -428,6 +428,13 @@ def run_arm(arm, seed, data, args, device):
     #          shape of the waves without destroying anything.
     vmd_iters = next((int(b[3:]) for b in bits if b.startswith("vmd")
                       and b[3:].isdigit()), 0)
+    # +vs<n>  constrain the VMD update to init +/- n/100 of the local band
+    #          gap. Unconstrained adaptation cost 1.9%, and this repo's own v2
+    #          history says why: free centres left only 24% of windows with
+    #          their channel ordering intact. Adaptivity is worth having only
+    #          if channel k still means the same thing next window.
+    vmd_step = next((int(b[2:]) / 100.0 for b in bits if b.startswith("vs")
+                     and b[2:].isdigit()), 0.0)
     phase = "phase" in bits
     mca = next((int(b[3:]) for b in bits if b.startswith("mca")
                 and b[3:].isdigit()), 0)
@@ -472,7 +479,7 @@ def run_arm(arm, seed, data, args, device):
         gate_additive=gate_additive, xenv=xenv, tconv=tconv,
         horizons=len(data["horizons"]) if n_mh else 1, quantiles=quantiles,
         pool=pool, exo_rank=exo_rank, mca=mca, phase=phase,
-        vmd_iters=vmd_iters,
+        vmd_iters=vmd_iters, vmd_step=vmd_step,
     ).to(device)
     # Which column of the shared multi-horizon target block is the scored one.
     hi = data["hi"]
