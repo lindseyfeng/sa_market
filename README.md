@@ -500,37 +500,16 @@ These are **one seed each**, from several batches, and seed noise is about 0.12 
 
 Moving from 37 to 86 channels helps the ridge (36.37 → 36.13) and hurts the network. The band architecture still beats `panel_lstm` by about 9% on every seed, which reproduces the §4 result on five regions with three seeds.
 
-**What this round tried.** The starting point is §2: with fixed masks, everything between the input and the LSTM is linear. The bands also sum exactly back to the input, so ridge on bands equals ridge on the raw window. Each variant either breaks that linearity or patches one specific weakness. Percentages in the first block are against the linear bank on 37 channels, one seed.
+**What helped.** The starting point is §2: with fixed masks, everything between the input and the LSTM is linear. Of the 16 variants tried, four are worth keeping:
 
 | variant | what it adds | why | result |
 |---|---|---|---|
-| *Make the bands nonlinear* | | | |
-| `+env` | each band's analytic envelope and instantaneous frequency, as extra channels; the bands themselves are kept | the LSTM sees waveforms but not how strong or how fast a cycle currently is, and neither is a linear quantity | **helps**, −3.2%. Every arm that beats the ridge uses it |
-| `+gate` | a magnitude-dependent gain per frequency, applied in place | treat large and small swings differently | −0.7%, far less than `env`. Once open, the bands no longer sum to the input |
-| `+gate+env`, `+bgate` | both; `bgate` also mixes across bands with a 3-tap conv and a FiLM gate | see whether they stack | each addition loses ground: −3.2% → −2.7% → −1.5% |
-| `+agate` | the same gate, but the original bands are kept and the gated copy is added as channels | was the gate's problem that it replaced information? | no gain |
-| `+ad50` | input-dependent band edges (`adapt=0.5`; every earlier run pinned it to 0) | the nonlinear switch the code always had and never used | no gain |
-| *Let the band centres adapt per window* | | | |
-| `+vmd3` | 3 iterations of VMD's centre-frequency update inside each input window, renormalised so nothing is lost | VMD's adaptivity without its leakage: the published setups decompose the whole series, future included | unconstrained, **+1.9% worse**: band k means a different period in every window |
-| `+vs50`, `+vs25` | cap each centre's move at ±50% / ±25% of the gap to its neighbour | keep the adaptivity, but keep band k the same period | **helps**. In most windows the centre sits on the cap, and it is released mainly in spike windows |
-| `+vmd5` | 5 iterations instead of 3 | do more iterations help? | no better than 3 |
-| `+phase` | a learned quadratic phase per band | real masks can only build time-symmetric waves, but a spike rises in minutes and decays over hours | no gain alone; 35.83 in combination, one seed |
-| *Change how the window is summarised* | | | |
-| `+attn` | attention pooling over the 96 steps instead of the last hidden state | the ridge sees all 3,552 values, while the LSTM keeps only its final state | unstable alone, worse on 2 of 3 seeds; stable only with `vs50` |
-| *Change the output* | | | |
-| `+q3` | predict the 0.1 / 0.5 / 0.9 quantiles and score the median | a spike hour's conditional distribution is multimodal, and one point cannot summarise it | as `attn`: helps only in combination |
-| *Change how other regions and weather are read* | | | |
-| `+xenv` | envelope and frequency of the exogenous mix too | `env` covers only the target price | no gain |
-| `+exo` | M exogenous components per band instead of 1 | squeezing 85 channels into one scalar per band may be why more channels hurt the network | no gain |
-| `+tconv` | a depthwise conv per band, dilated to that band's own period | let each band read history at its own pace | no gain |
-| *Split by mechanism instead of frequency* | | | |
-| `+mca2` | the 2 lowest bands as trend and cycle; the residual soft-thresholded into a nonnegative scarcity premium and a nonpositive oversupply discount | a Gaussian band is spread across the whole window in time, so it smears a spike over every band; sparse components can locate it | no gain (36.21 vs 36.20) |
-| *Add data* | | | |
-| 65 channels | scarcity and interconnector series | the physical drivers of spikes | no gain |
-| 86 channels | weather for the four other regions | only SA1 had weather | helps the ridge (36.37 → 36.13), hurts the network |
-| *Not run* | `+cat` (concatenate every step), `+mh` (supervise every horizon up to N) | | |
+| `+env` | each band's analytic envelope and instantaneous frequency, as extra channels; the bands themselves are kept | the LSTM sees waveforms but not how strong or how fast a cycle currently is, and neither is a linear quantity | −3.2% against the linear bank. Every arm that beats the ridge uses it |
+| `+vmd3+vs50` | 3 iterations of VMD's centre-frequency update inside each input window, with each centre's move capped at ±50% of the gap to its neighbour | VMD's adaptivity without its leakage, while keeping band k the same period from window to window | better than `+env` alone, 36.57 against 36.88 over 3 seeds |
+| `+attn` | attention pooling over the 96 steps instead of the last hidden state | the ridge sees all 3,552 values, while the LSTM keeps only its final state | helps only together with `vs50` |
+| `+q3` | predict the 0.1 / 0.5 / 0.9 quantiles and score the median | a spike hour's distribution is multimodal, and one point cannot summarise it | helps only together with `vs50` |
 
-In short, variants that only **add** information help (`env`, constrained `vmd`). Variants that **replace** the bands or let them drift hurt (`gate`, unconstrained `vmd`). Changes to the readout and the output (`attn`, `q3`) hold up only together with `vs50`.
+All four together give the best three-seed result, 36.48 ± 0.09. The other twelve variants did not help; they are listed in §11 of [`attic/FINDINGS-full.md`](attic/FINDINGS-full.md).
 
 **Bands.** The fixed bank finds the daily cycle (22-25 h) and its first harmonic (10.7-11.5 h) on every seed. The `vs50` arm learns the same anchors. In 66-98% of windows its update sits at the clamp, and it is released mostly in windows that contain a spike. In practice, then, it behaves as a two-state switch. Whether the gain comes from the adaptation or only from the lower placement has not been tested; a fixed bank placed at the clamp floor would answer that.
 
