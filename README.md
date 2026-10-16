@@ -6,6 +6,8 @@ Can a learnable frequency decomposition improve electricity-price forecasting be
 
 **The ceiling is already visible.** With `adapt=0`, which is what every run here uses, the decomposition is a fixed *linear* map of the input window (§2). §2.2 shows a linear reader gains no expressive power from it at all, and §2.4 shows a tree gets 4.4% *worse* on it. So the 6.8% is not expressive power — it is what a bounded, shared, whole-window linear filter does for an LSTM's optimisation. That is a real and reproducible effect, and it is also a ceiling. The next move is to make the decomposition nonlinear, which in this codebase means one switch nobody has turned on: `adapt > 0` (§1.2, §7).
 
+**Update (October 16):** on five regions and the 37-channel panel, the band model now beats the ridge baseline as well, 35.82 against 36.37, though from one seed. On 86 channels the ridge still wins. See §9.
+
 > **Experiment scope:** generated October 9, 2026; horizon `h=6` as reported; SA1 evaluation, 2021 test year; one seed; 30 epochs. The joint model predicts five regions. Neural arms share the window list, objective configuration except for stated ablations, and seed. No experiments were rerun for this rewrite.
 
 ## At a glance
@@ -469,6 +471,38 @@ The original report attributes two earlier findings to [`attic/FINDINGS-full.md`
 The two headline paired effects — −6.8% for `joint` against the raw-window LSTM (33/48 half-hours) and −5.6% against identity-frozen coupling (32/48), both at rounded DM p = 0.000 — are reproduced in §5.1 and §2.4 from the prediction files, not inherited. They are full-arm comparisons: `joint` differs from `panel_lstm` in its input representation and in nothing else, but that one difference bundles the bank, the coupling and the 37-to-16 narrowing together, which is why §2.4 splits it.
 
 [`PITFALLS.md`](PITFALLS.md) records the PACE execution and measurement traps behind these runs. Both files are in this repository; the two claims above are still inherited from the earlier report and are not re-derived by the tables here.
+
+## 9. Update, October 15-16: the network beats the ridge on 37 channels
+
+Everything above is one seed, SA1 only, and scored against `panel_lstm`. This section is the round that came after, and its numbers are on a different footing: **mean MAE over all five regions**, h = 6, train 2018-2020, test 2021, epoch selected on validation. Do not compare them with the SA1 tables in §4-§6. The full record, including the band analysis, is §11 of [`attic/FINDINGS-full.md`](attic/FINDINGS-full.md).
+
+**On the 37-channel panel the network now beats the ridge.** Ridge `arx_window` on the raw 96 × 37 window scores 36.37. Eleven arms come in under it, and every one of them uses `+env`, which adds each band's analytic envelope and instantaneous frequency as extra channels. Plain `joint` without it scores 36.88, above the ridge. The best five:
+
+| arm | MAE | vs ridge |
+|---|---:|---:|
+| `+env+attn+q3` | 35.82 | −1.5% |
+| `+env+vmd3+phase+attn+q3` | 35.83 | −1.5% |
+| `+env+vmd3+vs50` | 35.98 | −1.1% |
+| `+env+vmd3+attn+q3` | 36.05 | −0.9% |
+| `+env` | 36.20 | −0.5% |
+| ridge `arx_window` | 36.37 | — |
+
+These are **one seed each**, from several batches, and seed noise is about 0.12 MAE. The three-seed check was started and then cancelled, so this result is unreplicated.
+
+**On the 86-channel panel the ridge stays ahead.** Three seeds, with all controls in the same batch:
+
+| arm | mean ± sd over 3 seeds | vs ridge |
+|---|---:|---:|
+| `panel_lstm`, no decomposition | 40.17 ± 0.33 | +11.2% |
+| `joint+env` | 36.88 ± 0.17 | +2.1% |
+| `+env+vmd3+vs50+attn+q3` | 36.48 ± 0.09 | +1.0% |
+| ridge `arx_window`, 96 × 86 | 36.13 | — |
+
+Moving from 37 to 86 channels helps the ridge (36.37 → 36.13) and hurts the network. The band architecture still beats `panel_lstm` by about 9% on every seed, which reproduces the §4 result on five regions with three seeds.
+
+**What this round tried.** There were 16 variants. Two helped: `+env`, and `+vs50`, which is a VMD-style per-window centre update clamped to half a band gap. That update also makes the bank input-dependent, the first step past the linear ceiling described in §2. Two helped only in combination with `vs50`: `+attn`, an attention readout, and `+q3`. Twelve did nothing or made things worse: gating (`gate`, `agate`, `bgate`), `ad50`, `xenv`, `tconv`, `exo`, `mca`, an unconstrained VMD update, `phase` on its own, the scarcity and interconnector channels, and weather for four more regions.
+
+**Bands.** The fixed bank finds the daily cycle (22-25 h) and its first harmonic (10.7-11.5 h) on every seed. The `vs50` arm learns the same anchors. In 66-98% of windows its update sits at the clamp, and it is released mostly in windows that contain a spike. In practice, then, it behaves as a two-state switch. Whether the gain comes from the adaptation or only from the lower placement has not been tested; a fixed bank placed at the clamp floor would answer that.
 
 ---
 
