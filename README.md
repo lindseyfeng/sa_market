@@ -504,12 +504,12 @@ Moving from 37 to 86 channels helps the ridge (36.37 → 36.13) and hurts the ne
 
 | variant | what it adds | why | result |
 |---|---|---|---|
-| `+env` | each band's analytic envelope and instantaneous frequency, as extra channels; the bands themselves are kept | the LSTM sees waveforms but not how strong or how fast a cycle currently is, and neither is a linear quantity | −3.2% against the linear bank. Every arm that beats the ridge uses it |
-| `+vmd3+vs50` | 3 iterations of VMD's centre-frequency update inside each input window, with each centre's move capped at ±50% of the gap to its neighbour | VMD's adaptivity without its leakage, while keeping band k the same period from window to window | better than `+env` alone, 36.57 against 36.88 over 3 seeds |
+| `+env` | each band's analytic envelope and instantaneous frequency, as extra channels; the bands themselves are kept | the LSTM sees waveforms but not how strong or how fast a cycle currently is, and neither is a linear quantity | −3.2% against the linear bank (37 channels, 1 seed). Every arm that beats the ridge uses it |
+| `+vmd3+vs50` | 3 iterations of VMD's centre-frequency update inside each input window, with each centre's move capped at ±50% of the gap to its neighbour | VMD's adaptivity without its leakage, while keeping band k the same period from window to window | better than `+env` alone, 36.57 against 36.88 (86 channels, 3 seeds) |
 | `+attn` | attention pooling over the 96 steps instead of the last hidden state | the ridge sees all 3,552 values, while the LSTM keeps only its final state | helps only together with `vs50` |
 | `+q3` | predict the 0.1 / 0.5 / 0.9 quantiles and score the median | a spike hour's distribution is multimodal, and one point cannot summarise it | helps only together with `vs50` |
 
-All four together give the best three-seed result, 36.48 ± 0.09. The other twelve variants did not help; they are listed in §11 of [`attic/FINDINGS-full.md`](attic/FINDINGS-full.md).
+All four together give the best three-seed result on 86 channels, 36.48 ± 0.09. The other twelve variants did not help; they are listed in §11 of [`attic/FINDINGS-full.md`](attic/FINDINGS-full.md).
 
 **Bands.** The fixed bank finds the daily cycle (22-25 h) and its first harmonic (10.7-11.5 h) on every seed. The `vs50` arm learns the same anchors. In 66-98% of windows its update sits at the clamp, and it is released mostly in windows that contain a spike. In practice, then, it behaves as a two-state switch. Whether the gain comes from the adaptation or only from the lower placement has not been tested; a fixed bank placed at the clamp floor would answer that.
 
